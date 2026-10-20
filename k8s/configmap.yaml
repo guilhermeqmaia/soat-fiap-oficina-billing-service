@@ -1,0 +1,22 @@
+# Variaveis NAO sensiveis. Segredos: Secret `oficina-billing-service-app` (JWT_SECRET)
+# e `oficina-billing-service-db` (DATABASE_URL), ambos sincronizados pelo CD.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oficina-billing-service-config
+  labels:
+    { app.kubernetes.io/name: oficina-billing-service, app.kubernetes.io/part-of: oficina-mecanica }
+data:
+  NODE_ENV: 'production'
+  PORT: '3001'
+  JWT_ISSUER: 'oficina-auth-lambda'
+  DB_SSL: 'true'
+  # Rate limiting e da borda (API Gateway, ADR-0005); atras do NLB o IP de origem e unico.
+  THROTTLER_DISABLED: 'true'
+  AWS_REGION: 'us-east-1'
+  # Preenchidos pelo CD a partir das vars SNS_TOPIC_ARN / SQS_QUEUE_URL (stage messaging/ do infra-k8s)
+  SNS_TOPIC_ARN: '__SNS_TOPIC_ARN__'
+  SQS_QUEUE_URL: '__SQS_QUEUE_URL__'
+  DD_TRACE_ENABLED: 'true'
+  DD_SERVICE: 'oficina-billing-service'
+  DD_ENV: 'producao'

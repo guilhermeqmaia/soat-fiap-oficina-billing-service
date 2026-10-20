@@ -1,0 +1,9 @@
+# Um NLB interno para todos os servicos (Terraform, stage gateway/ do infra-k8s):
+# cada servico expoe um NodePort fixo que vira um target group/listener la.
+apiVersion: v1
+kind: Service
+metadata:
+  name: oficina-billing-service
+spec:
+  type: NodePort
+  ports: [{ name: http, protocol: TCP, port: 3001, targetPort: http, nodePort: 30081 }]

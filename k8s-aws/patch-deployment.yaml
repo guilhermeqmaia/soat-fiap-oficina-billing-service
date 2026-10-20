@@ -1,0 +1,10 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oficina-billing-service
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          imagePullPolicy: Always # tag por commit (imutavel)
