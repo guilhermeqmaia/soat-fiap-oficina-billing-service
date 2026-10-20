@@ -14,16 +14,16 @@
 
 ## Eventos e comandos
 
-| Direção | Mensagem |
-|---|---|
-| consome (fila `billing-comandos`) | `billing.gerar-orcamento`, `billing.cancelar-orcamento` |
+| Direção                            | Mensagem                                                                                                                                                                           |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| consome (fila `billing-comandos`)  | `billing.gerar-orcamento`, `billing.cancelar-orcamento`                                                                                                                            |
 | publica (tópico `oficina-billing`) | `billing.orcamento-gerado`, `billing.orcamento-aprovado`, `billing.orcamento-rejeitado`, `billing.pagamento-aprovado`, `billing.pagamento-recusado`, `billing.orcamento-cancelado` |
 
 Contratos: [`docs/contratos/asyncapi.yaml`](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/contratos/asyncapi.yaml).
 
 ## Histórias
 
-- [US-F4-04 — Repositórios dos serviços com CI/CD independente](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-04-repos-e-cicd-por-servico.md) *(este scaffold)*
+- [US-F4-04 — Repositórios dos serviços com CI/CD independente](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-04-repos-e-cicd-por-servico.md) _(este scaffold)_
 - [US-F4-08 — Orçamento, aprovação e rejeição](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-08-billing-orcamento.md)
 - [US-F4-09 — Pagamento com Mercado Pago](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-09-billing-mercado-pago.md)
 - [US-F4-11 — Compensações (cancelar orçamento, estorno)](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-11-compensacoes-rollback.md)
