@@ -1,0 +1,16 @@
+# ClusterIP na base. No EKS o overlay troca para NodePort: o NLB interno unico
+# (stage gateway/ do infra-k8s, ADR-0013) tem um target group por servico.
+apiVersion: v1
+kind: Service
+metadata:
+  name: oficina-billing-service
+  labels:
+    {
+      app.kubernetes.io/name: oficina-billing-service,
+      app.kubernetes.io/part-of: oficina-mecanica,
+      app.kubernetes.io/component: api,
+    }
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: oficina-billing-service, app.kubernetes.io/component: api }
+  ports: [{ name: http, protocol: TCP, port: 3001, targetPort: http }]

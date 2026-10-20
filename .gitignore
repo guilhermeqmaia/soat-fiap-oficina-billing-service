@@ -4,5 +4,6 @@ coverage/
 .env
 .env.*
 !.env.example
-*.tfvars
-!*.tfvars.example
+src/generated/
+*.tsbuildinfo
+k8s/secret.yaml

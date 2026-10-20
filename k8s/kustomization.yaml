@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Base: cluster local (kind) ou qualquer K8s. O overlay k8s-aws/ ajusta para EKS.
+namespace: oficina
+resources:
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - hpa.yaml
+  - migrations-job.yaml
+  - secret.yaml # gerado pelo CD a partir do Secrets Manager (nao versionado)
+images:
+  - name: oficina-billing-service
+    newName: oficina-billing-service
+    newTag: latest

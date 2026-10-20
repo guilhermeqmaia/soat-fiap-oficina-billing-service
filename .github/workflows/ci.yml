@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, homolog]
+  push:
+    branches: [main, homolog]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, typecheck, testes (gate 80%) e build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: npm }
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run format
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Unitarios + cobertura
+        run: npm run test:unit:cov
+      - name: Integracao/e2e (testcontainers)
+        run: npm run test:integration
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with: { name: coverage, path: coverage/unit/lcov.info, retention-days: 7 }
+      - run: npm audit --omit=dev --audit-level=high
+
+  docker:
+    name: Build da imagem
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t oficina-billing-service:ci .
+
+  sonarcloud:
+    name: SonarCloud (quality gate)
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: npm }
+      - run: npm ci && npx prisma generate && npm run test:unit:cov
+      - name: Analise
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v5
+        env: { SONAR_TOKEN: '${{ secrets.SONAR_TOKEN }}' }
+      - name: Sem SONAR_TOKEN
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: echo "::warning::SONAR_TOKEN ausente — analise pulada (US-F4-13)."
+        env: { SONAR_TOKEN: '${{ secrets.SONAR_TOKEN }}' }
