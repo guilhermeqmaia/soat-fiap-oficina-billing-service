@@ -4,11 +4,11 @@
 
 ****DESCRICAO**** — microsserviço do Sistema da Oficina Mecânica (Tech Challenge FIAP, Fase 4). Gerado pelo template do [`@guilhermeqmaia/oficina-kit`](https://github.com/guilhermeqmaia/soat-fiap-oficina-kit).
 
-> Planejamento, RFCs/ADRs, contratos de eventos (AsyncAPI) e diagramas: [hub](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/plano-execucao-fase-4.md).
+> Planejamento, RFCs/ADRs, contratos de eventos (AsyncAPI) e diagramas: [hub](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/plano-execucao-fase-4.md).
 
 ## Responsabilidades
 
-**Possui:** Orçamento (geração a partir do diagnóstico, aprovação/rejeição pelo cliente), Pagamento (Mercado Pago Checkout Pro + webhook assinado) e **ledger** append-only. Banco próprio **PostgreSQL** `oficina_billing` ([RFC-0004](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/arquitetura/rfcs/RFC-0004-decomposicao-em-microsservicos.md)).
+**Possui:** Orçamento (geração a partir do diagnóstico, aprovação/rejeição pelo cliente), Pagamento (Mercado Pago Checkout Pro + webhook assinado) e **ledger** append-only. Banco próprio **PostgreSQL** `oficina_billing` ([RFC-0004](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/arquitetura/rfcs/RFC-0004-decomposicao-em-microsservicos.md)).
 
 **Não possui:** a OS (OS Service), itens/preços do catálogo (Execução — chegam congelados no comando `billing.gerar-orcamento`), notificação ao cliente (OS Service).
 
@@ -19,14 +19,14 @@
 | consome (fila `billing-comandos`)  | `billing.gerar-orcamento`, `billing.cancelar-orcamento`                                                                                                                            |
 | publica (tópico `oficina-billing`) | `billing.orcamento-gerado`, `billing.orcamento-aprovado`, `billing.orcamento-rejeitado`, `billing.pagamento-aprovado`, `billing.pagamento-recusado`, `billing.orcamento-cancelado` |
 
-Contratos: [`docs/contratos/asyncapi.yaml`](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/contratos/asyncapi.yaml).
+Contratos: [`docs/contratos/asyncapi.yaml`](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/contratos/asyncapi.yaml).
 
 ## Histórias
 
-- [US-F4-04 — Repositórios dos serviços com CI/CD independente](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-04-repos-e-cicd-por-servico.md) _(este scaffold)_
-- [US-F4-08 — Orçamento, aprovação e rejeição](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-08-billing-orcamento.md)
-- [US-F4-09 — Pagamento com Mercado Pago](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-09-billing-mercado-pago.md)
-- [US-F4-11 — Compensações (cancelar orçamento, estorno)](https://github.com/guilhermeqmaia/soat-fiap-oficina-mecanica-app/blob/main/docs/user-stories/f4-11-compensacoes-rollback.md)
+- [US-F4-04 — Repositórios dos serviços com CI/CD independente](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/user-stories/f4-04-repos-e-cicd-por-servico.md) _(este scaffold)_
+- [US-F4-08 — Orçamento, aprovação e rejeição](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/user-stories/f4-08-billing-orcamento.md)
+- [US-F4-09 — Pagamento com Mercado Pago](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/user-stories/f4-09-billing-mercado-pago.md)
+- [US-F4-11 — Compensações (cancelar orçamento, estorno)](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/user-stories/f4-11-compensacoes-rollback.md)
 
 ## Execução local
 
