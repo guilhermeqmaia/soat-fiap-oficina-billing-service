@@ -3,3 +3,5 @@ coverage
 node_modules
 src/generated
 CHANGELOG.md
+reports
+openapi.yaml
