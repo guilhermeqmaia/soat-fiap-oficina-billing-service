@@ -1,10 +1,12 @@
 import { strict as assert } from 'assert';
 import { Given, Then, When } from '@cucumber/cucumber';
+import nock from 'nock';
 import request from 'supertest';
 import {
   ate,
   cabecalhosWebhook,
   corpoOrcamento,
+  mpCancelandoOrder,
   mpConsultandoOrder,
   mpCriandoOrder,
   osRecebendoCallbacks,
@@ -75,6 +77,24 @@ Given(
     if (status !== 'action_required') osRecebendoCallbacks(this.callbacks);
   },
 );
+
+Given(
+  'que o webhook assinado ja chegou e o pagamento foi recusado',
+  async function (this: BillingWorld) {
+    await comWebhook(this, cabecalhosWebhook(this.orderId)).expect(200);
+    await ate(() => this.callbacks.length === 1);
+    await ate(async () => {
+      const row = await prisma().cobranca.findFirstOrThrow({ where: { numeroOS: this.numero } });
+      return row.status === 'RECUSADA' && row.callbackEntregueEm !== null;
+    });
+  },
+);
+
+When('o OS Service solicita uma nova cobranca', async function (this: BillingWorld) {
+  mpCancelandoOrder(this.orderId);
+  mpCriandoOrder(`${this.orderId}N`);
+  this.resposta = await cobrar(this);
+});
 
 When('o OS Service solicita o orcamento', async function (this: BillingWorld) {
   this.resposta = await gerar(this);
@@ -189,6 +209,14 @@ Then(
     assert.equal(this.resposta.body.valor, valor);
   },
 );
+
+Then('a resposta traz uma nova order', function (this: BillingWorld) {
+  assert.equal(this.resposta.body.orderId, `${this.orderId}N`);
+});
+
+Then('a order anterior e cancelada no Mercado Pago', function () {
+  assert.deepEqual(nock.pendingMocks(), []);
+});
 
 Then('a resposta informa o motivo', function (this: BillingWorld) {
   assert.equal(typeof this.resposta.body.motivo, 'string');

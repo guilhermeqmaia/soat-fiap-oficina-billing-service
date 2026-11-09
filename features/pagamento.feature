@@ -23,6 +23,14 @@ Funcionalidade: Confirmacao do pagamento pelo Mercado Pago
     E o OS Service recebe o callback "billing.pagamento-recusado"
     E a cobranca fica "RECUSADA"
 
+  Cenario: Nova cobranca depois de um pagamento recusado
+    Dado que o Mercado Pago informa a order como "failed" com detalhe "cc_rejected"
+    E que o webhook assinado ja chegou e o pagamento foi recusado
+    Quando o OS Service solicita uma nova cobranca
+    Entao a resposta tem status 201
+    E a resposta traz uma nova order
+    E a order anterior e cancelada no Mercado Pago
+
   Cenario: Pagamento pendente mantem a cobranca aberta
     Dado que o Mercado Pago informa a order como "action_required" com detalhe "waiting_payment"
     Quando o webhook assinado chega

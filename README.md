@@ -86,13 +86,13 @@ Cobertura dos testes unitários: acima de 99%, com gate de 80%. O repositório P
 
 | Suíte                                      | Resultado local (09/11/2026)                       |
 | ------------------------------------------ | -------------------------------------------------- |
-| Unitários (`test:unit:cov`)                | 131 testes, 99,83% de linhas e 99,25% de branches  |
-| Integração e contrato (`test:integration`) | 24 testes; repositório Prisma com 98,52% de linhas |
-| BDD (`test:bdd`)                           | 15 cenários, 86 passos                             |
+| Unitários (`test:unit:cov`)                | 134 testes, 99,83% de linhas e 99,25% de branches  |
+| Integração e contrato (`test:integration`) | 26 testes; repositório Prisma com 98,52% de linhas |
+| BDD (`test:bdd`)                           | 16 cenários, 95 passos                             |
 
 ### Swagger
 
-Interface em `http://localhost:3001/api` fora de produção. O contrato versionado está em [`openapi.yaml`](openapi.yaml) e publicado no hub em [`docs/contratos/openapi/billing-service.yaml`](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/contratos/openapi/billing-service.yaml).
+Interface em `http://localhost:3001/api` fora de produção; em produção ela é desligada e o gateway não expõe o `/api`. O contrato versionado está em [`openapi.yaml`](openapi.yaml), que o CI compara com o código, e publicado no hub em [`docs/contratos/openapi/billing-service.yaml`](https://github.com/guilhermeqmaia/soat-fiap-oficina-os-service/blob/main/docs/contratos/openapi/billing-service.yaml).
 
 ## Deploy
 

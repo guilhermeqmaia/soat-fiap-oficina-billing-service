@@ -1,5 +1,6 @@
 import { INestApplication } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import * as fs from 'fs';
+import * as path from 'path';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import jestOpenAPI from 'jest-openapi';
@@ -19,37 +20,33 @@ import {
 } from '../test/app-harness';
 import { startTestDatabase, stopTestDatabase } from '../test/database.container';
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const yaml = require('js-yaml');
+
 jest.setTimeout(120000);
 
-const DINHEIRO = { type: 'string', pattern: '^\\d+\\.\\d{2}$' };
-const TEXTO = { type: 'string' };
+const raiz = path.resolve(__dirname, '../..');
+const lerYaml = (arquivo: string) => yaml.load(fs.readFileSync(path.join(raiz, arquivo), 'utf8'));
 
-function dados(required: string[], properties: Record<string, unknown>) {
-  return { type: 'object', required, properties };
+/** Copia de docs/contratos/asyncapi.yaml do hub; o CI falha se ela divergir do original. */
+const asyncapi = lerYaml('docs/contratos/asyncapi.yaml');
+
+function resolverRefs(no: unknown): unknown {
+  if (Array.isArray(no)) return no.map(resolverRefs);
+  if (!no || typeof no !== 'object') return no;
+  const obj = no as Record<string, unknown>;
+  if (typeof obj.$ref === 'string') {
+    return resolverRefs(asyncapi.components.schemas[obj.$ref.split('/').pop() as string]);
+  }
+  return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, resolverRefs(v)]));
 }
 
-/** `data` de cada callback, transcrito de docs/contratos/asyncapi.yaml no hub. */
-const SCHEMAS_DATA: Record<string, unknown> = {
-  'billing.orcamento-aprovado': dados(['numeroOS', 'orcamentoId'], {
-    numeroOS: TEXTO,
-    orcamentoId: TEXTO,
-  }),
-  'billing.orcamento-rejeitado': dados(['numeroOS', 'orcamentoId'], {
-    numeroOS: TEXTO,
-    orcamentoId: TEXTO,
-    motivo: TEXTO,
-  }),
-  'billing.pagamento-aprovado': dados(['numeroOS', 'orderId', 'valor'], {
-    numeroOS: TEXTO,
-    orderId: TEXTO,
-    valor: DINHEIRO,
-  }),
-  'billing.pagamento-recusado': dados(['numeroOS', 'orderId', 'motivo'], {
-    numeroOS: TEXTO,
-    orderId: TEXTO,
-    motivo: TEXTO,
-  }),
-};
+/** Schema de `data` publicado no AsyncAPI para o evento `nome`. */
+function schemaDoEvento(nome: string): object {
+  const mensagem = Object.values<any>(asyncapi.components.messages).find((m) => m.name === nome);
+  if (!mensagem) throw new Error(`Evento ${nome} nao existe no AsyncAPI`);
+  return resolverRefs(mensagem.payload.allOf[1].properties.data) as object;
+}
 
 const ENVELOPE = {
   type: 'object',
@@ -70,27 +67,30 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
   let seq = 0;
   let numero: string;
   let callbacks: CallbackRecebido[];
-  const ajv = new Ajv({ allErrors: true });
+  const ajv = new Ajv({ allErrors: true, strict: false });
   addFormats(ajv);
 
   const http = () => request(app.getHttpServer());
   const gerar = () =>
     http().post('/orcamentos').set('Authorization', tokenServico()).send(corpoOrcamento(numero));
 
+  function validarEvento(nome: string, dados: unknown) {
+    const valido = ajv.validate(schemaDoEvento(nome), dados);
+    expect(ajv.errors ?? []).toEqual([]);
+    expect(valido).toBe(true);
+  }
+
   function validarCallback(callback: CallbackRecebido) {
     expect(ajv.validate(ENVELOPE, callback.corpo)).toBe(true);
-    const schema = SCHEMAS_DATA[callback.corpo.type as string];
-    expect(schema).toBeDefined();
-    expect(ajv.validate(schema as object, callback.corpo.data)).toBe(true);
+    validarEvento(callback.corpo.type as string, callback.corpo.data);
     expect(callback.corpo.data.numeroOS).toBe(callback.numero);
   }
 
   beforeAll(async () => {
     process.env.DATABASE_URL = await startTestDatabase();
     app = await subirApp();
-    const config = new DocumentBuilder().setTitle('billing').setVersion('1.0').build();
-    const documento = SwaggerModule.createDocument(app, config);
-    jestOpenAPI(documento as unknown as Parameters<typeof jestOpenAPI>[0]);
+    // O arquivo publicado, nao um documento gerado na hora: o CI garante que ele acompanha o codigo.
+    jestOpenAPI(lerYaml('openapi.yaml'));
   });
 
   afterAll(async () => {
@@ -108,7 +108,7 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
   it('POST /orcamentos: 201 e 200 com o schema publicado', async () => {
     const criado = await gerar().expect(201);
     expect(criado).toSatisfyApiSpec();
-    expect(criado.body.total).toMatch(/^\d+\.\d{2}$/);
+    validarEvento('billing.orcamento-gerado', criado.body);
     expect(await gerar().expect(200)).toSatisfyApiSpec();
   });
 
@@ -129,6 +129,7 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
       .set('Authorization', tokenServico())
       .expect(201);
     expect(cobranca).toSatisfyApiSpec();
+    validarEvento('billing.cobranca-criada', cobranca.body);
 
     expect(
       await http()
@@ -168,6 +169,32 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
     validarCallback(callbacks[0]);
   });
 
+  it('pagamento recusado segue o schema do callback', async () => {
+    await gerar().expect(201);
+    osRecebendoCallbacks(callbacks);
+    await http()
+      .post(`/orcamentos/${numero}/aprovar`)
+      .set('Authorization', tokenCliente('cli-1'))
+      .expect(200);
+    await ate(() => callbacks.length === 1);
+    const orderId = `ORDCTR${seq}`;
+    mpCriandoOrder(orderId);
+    await http()
+      .post(`/orcamentos/${numero}/cobrar`)
+      .set('Authorization', tokenServico())
+      .expect(201);
+    osRecebendoCallbacks(callbacks);
+    mpConsultandoOrder(orderId, { status: 'failed', status_detail: 'cc_rejected' });
+    await http()
+      .post(`/webhooks/mercadopago?type=order&data.id=${orderId}`)
+      .set(cabecalhosWebhook(orderId))
+      .send({ action: 'order.processed', data: { id: orderId } })
+      .expect(200);
+    await ate(() => callbacks.length === 2);
+    expect(callbacks[1].corpo.type).toBe('billing.pagamento-recusado');
+    validarCallback(callbacks[1]);
+  });
+
   it('409 { motivo } de cobrar nao aprovado', async () => {
     await gerar().expect(201);
     const conflito = await http()
@@ -187,5 +214,6 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
       .expect(200);
     expect(cancelado).toSatisfyApiSpec();
     expect(cancelado.body.estornado).toBe(false);
+    validarEvento('billing.orcamento-cancelado', cancelado.body);
   });
 });

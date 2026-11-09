@@ -28,6 +28,14 @@ jobs:
       - name: Integracao/e2e (testcontainers)
         run: npm run test:integration
       - run: npm run build
+      - name: OpenAPI acompanha o codigo
+        run: npm run openapi:export && git diff --exit-code openapi.yaml
+      - name: Lint do OpenAPI
+        run: npx -y @redocly/cli@2.77.0 lint openapi.yaml
+      - name: AsyncAPI igual ao do hub
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/guilhermeqmaia/soat-fiap-oficina-os-service/main/docs/contratos/asyncapi.yaml \
+            | diff - docs/contratos/asyncapi.yaml
       - uses: actions/upload-artifact@v4
         with: { name: coverage, path: coverage/unit/lcov.info, retention-days: 7 }
       - run: npm audit --omit=dev --audit-level=high

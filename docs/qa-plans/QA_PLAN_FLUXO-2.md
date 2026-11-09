@@ -20,8 +20,9 @@ e a parte deste repositório das US-F4-13, 14, 15 e 18.
 | `npm run test:bdd`         | Cenários Gherkin em `features/`; relatório em `reports/cucumber.html`     |
 | `npm run openapi:export`   | Gera o `openapi.yaml` publicado no hub                                    |
 
-Os testes de contrato estão em `src/orcamento/contrato.e2e.spec.ts`: respostas contra
-o OpenAPI gerado e callbacks contra o envelope e os schemas de `asyncapi.yaml`.
+Os testes de contrato estão em `src/orcamento/contrato.e2e.spec.ts`: respostas contra o
+`openapi.yaml` versionado, e respostas e callbacks contra os schemas de `asyncapi.yaml`.
+O CI falha se o `openapi.yaml` divergir do código ou se a cópia do AsyncAPI divergir do hub.
 
 ## Cenários manuais no sandbox
 
@@ -56,23 +57,24 @@ principalmente o estado de uma order recusada (`failed` ou `action_required`).
 
 ## Rastreabilidade
 
-| Critério                                         | Cenários                                                |
-| ------------------------------------------------ | ------------------------------------------------------- |
-| Orçamento com itens congelados, total e validade | `orcamento.feature`                                     |
-| `POST /orcamentos` idempotente                   | `orcamento.feature`, e2e                                |
-| Consultas com posse                              | e2e, `consultas` nos unitários                          |
-| Aprovar e rejeitar com callback                  | `aprovacao.feature`                                     |
-| Imutável após aprovado                           | `aprovacao.feature`                                     |
-| `DELETE` idempotente                             | `orcamento.feature`, e2e                                |
-| Ledger append-only                               | e2e                                                     |
-| Cobrança via `POST /v1/orders`                   | `cobranca.feature`, unitário do gateway, M1             |
-| Webhook com `x-signature`                        | `pagamento.feature`, unitário de assinatura             |
-| Consulta a order antes de agir                   | `pagamento.feature`, unitário `ProcessarOrderUseCase`   |
-| Aprovado, recusado e pendente                    | `pagamento.feature`, M2 a M4                            |
-| Reconciliação                                    | `pagamento.feature`, e2e, M6                            |
-| Idempotência por OS e por envelope               | e2e, M7                                                 |
-| Logs sem dados do pagador                        | `MercadoPagoSdkGateway` não registra corpo nem resposta |
-| Contrato HTTP                                    | `contrato.e2e.spec.ts`                                  |
+| Critério                                         | Cenários                                                        |
+| ------------------------------------------------ | --------------------------------------------------------------- |
+| Orçamento com itens congelados, total e validade | `orcamento.feature`                                             |
+| `POST /orcamentos` idempotente                   | `orcamento.feature`, e2e                                        |
+| Consultas com posse                              | e2e, `consultas` nos unitários                                  |
+| Aprovar e rejeitar com callback                  | `aprovacao.feature`                                             |
+| Imutável após aprovado                           | `aprovacao.feature`                                             |
+| `DELETE` idempotente                             | `orcamento.feature`, e2e                                        |
+| Ledger append-only                               | e2e                                                             |
+| Cobrança via `POST /v1/orders`                   | `cobranca.feature`, unitário do gateway, M1                     |
+| Webhook com `x-signature`                        | `pagamento.feature`, unitário de assinatura                     |
+| Consulta a order antes de agir                   | `pagamento.feature`, unitário `ProcessarOrderUseCase`           |
+| Aprovado, recusado e pendente                    | `pagamento.feature`, M2 a M4                                    |
+| Nova cobrança após recusa                        | `pagamento.feature`, e2e, M5                                    |
+| Reconciliação                                    | `pagamento.feature`, e2e, M6                                    |
+| Idempotência por OS e por envelope               | e2e, M7                                                         |
+| Logs sem dados do pagador                        | e2e captura a saída real, e unitário do `MercadoPagoSdkGateway` |
+| Contrato HTTP                                    | `contrato.e2e.spec.ts`                                          |
 
 ## Checklist de validação
 
