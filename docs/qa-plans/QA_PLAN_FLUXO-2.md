@@ -42,6 +42,21 @@ Com o Billing e o OS Service rodando e o webhook apontando para o túnel:
 partiu da documentação do hub. Compare com a resposta real de `GET /v1/orders/{id}`,
 principalmente o estado de uma order recusada (`failed` ou `action_required`).
 
+### Execução no sandbox — 09/11/2026 (review do PR #5)
+
+Rodado localmente com o Access Token de **teste** da aplicação espelho (`400480433027788`), Postgres no
+compose, OS Service substituído por um stub que aceita `POST /ordens-servico/{n}/eventos`, reconciliação
+desligada. Roteiro: `POST /orcamentos` (SERVICO) → `POST /orcamentos/{n}/aprovar` (CLIENTE) →
+`POST /orcamentos/{n}/cobrar` (SERVICO) duas vezes → `GET /pagamentos/{n}` (CLIENTE).
+
+| #   | Resultado |
+| --- | --------- |
+| M1  | **OK.** `201 { orderId: "ORDTST01M7031YBJVTKVK8MB49KVT5NP", linkPagamento: "https://www.mercadopago.com.br/checkout/v1/redirect?order_id=…&pref_id=…", valor: "333.60" }`. A order foi criada de fato no Mercado Pago (prefixo `ORDTST` = ambiente de teste). Repetir o `/cobrar` devolveu a **mesma** order (idempotência pela `X-Idempotency-Key`). `GET /pagamentos/{n}` → `PENDENTE` com o mesmo link. Callback `billing.orcamento-aprovado` chegou ao stub com envelope e `id` estáveis. Nenhum erro no log; nada do pagador foi registrado. |
+| M2–M7 | **Pendentes.** Exigem pagar no checkout com o comprador de teste (janela anônima) e o webhook apontando para uma URL pública que alcance o Billing (túnel ou gateway). Hoje o webhook da aplicação aponta para o webhook.site do runbook. |
+
+Observações para quando M2–M4 rodarem: confirmar o mapeamento de `status`/`status_detail` da order
+recusada em `resultado-order.ts` contra o `GET /v1/orders/{id}` real.
+
 ## Casos de borda
 
 | Caso                                | Onde está coberto                           |
@@ -81,5 +96,6 @@ principalmente o estado de uma order recusada (`failed` ou `action_required`).
 - [ ] `npm run format`, `lint`, `typecheck` e `build`
 - [ ] `npm run test:all:cov` e `npm run test:bdd`
 - [ ] Quality gate do SonarCloud verde
-- [ ] M1 a M7 executados no sandbox
+- [x] M1 executado no sandbox (09/11, order `ORDTST01M7031YBJVTKVK8MB49KVT5NP`)
+- [ ] M2 a M7 executados no sandbox (pagamento no checkout + webhook público)
 - [ ] Secret `MP_SECRET_ID` criado no Secrets Manager antes do deploy
