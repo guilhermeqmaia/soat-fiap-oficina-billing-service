@@ -242,6 +242,29 @@ describe('Billing (e2e com Postgres real)', () => {
     expect(new Set(chaves).size).toBe(1);
   });
 
+  it('logs nao expoem o pagador nem quando o Mercado Pago devolve o e-mail no erro', async () => {
+    await aprovado();
+    const saida: string[] = [];
+    const capturar = (texto: string | Uint8Array) => {
+      saida.push(String(texto));
+      return true;
+    };
+    const out = jest.spyOn(process.stdout, 'write').mockImplementation(capturar);
+    const err = jest.spyOn(process.stderr, 'write').mockImplementation(capturar);
+    try {
+      nock('https://api.mercadopago.com')
+        .post('/v1/orders')
+        .reply(400, { message: 'payer comprador@testuser.com invalido', status: 400 });
+      await cobrar().expect(500);
+    } finally {
+      out.mockRestore();
+      err.mockRestore();
+    }
+    const logs = saida.join('');
+    expect(logs).toContain('Mercado Pago falhou');
+    expect(logs).not.toContain(process.env.MP_PAYER_EMAIL as string);
+  });
+
   it('webhook com assinatura invalida: 401, auditado e sem consultar a order', async () => {
     await comOrder('ORD4E2E');
     await webhook('ORD4E2E', { 'x-signature': 'ts=1,v1=00', 'x-request-id': 'r-ruim' }).expect(401);

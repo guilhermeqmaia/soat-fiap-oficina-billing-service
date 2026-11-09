@@ -127,6 +127,25 @@ describe('MercadoPagoSdkGateway', () => {
     await expect(gateway.consultarOrder('ORD1')).resolves.toMatchObject({ pagamentos: [] });
   });
 
+  it.each([
+    [{ status: 400, message: 'payer comprador@testuser.com invalido' }, 'status 400'],
+    [new Error('comprador@testuser.com'), 'status desconhecido'],
+    [undefined, 'status desconhecido'],
+  ])('erro do SDK nao vaza dados do pagador: %j', async (falha, esperado) => {
+    orders.create.mockRejectedValue(falha);
+    orders.get.mockRejectedValue(falha);
+    orders.cancel.mockRejectedValue(falha);
+    for (const chamada of [
+      gateway.criarOrder(entrada),
+      gateway.consultarOrder('ORD1'),
+      gateway.cancelarOrder('ORD1'),
+    ]) {
+      const erro: Error = await chamada.catch((e) => e);
+      expect(erro.message).toContain(esperado);
+      expect(erro.message).not.toContain('comprador@');
+    }
+  });
+
   it('cancela com chave estavel', async () => {
     orders.cancel.mockResolvedValue({});
     await gateway.cancelarOrder('ORD1');
