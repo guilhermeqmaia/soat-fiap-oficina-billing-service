@@ -3,6 +3,12 @@
  * servico nao valida os tokens da Lambda; sem DATABASE_URL nao ha banco proprio.
  */
 const MIN_SECRET_LENGTH = 32;
+const OBRIGATORIAS_EM_PRODUCAO = [
+  'OS_SERVICE_URL',
+  'MP_ACCESS_TOKEN',
+  'MP_WEBHOOK_SECRET',
+  'MP_PAYER_EMAIL',
+];
 const PLACEHOLDER_SECRETS = new Set([
   'change-me-to-a-strong-random-secret',
   'changeme',
@@ -21,6 +27,11 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   }
   if (typeof config.DATABASE_URL !== 'string' || !config.DATABASE_URL.startsWith('postgres')) {
     throw new Error('DATABASE_URL e obrigatoria (banco proprio deste servico).');
+  }
+  if (config.NODE_ENV === 'production') {
+    for (const nome of OBRIGATORIAS_EM_PRODUCAO) {
+      if (!config[nome]) throw new Error(`${nome} e obrigatoria em producao.`);
+    }
   }
   return config;
 }
