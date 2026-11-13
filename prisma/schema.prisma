@@ -9,3 +9,142 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum StatusOrcamento {
+  PENDENTE
+  APROVADO
+  REJEITADO
+  CANCELADO
+  EXPIRADO
+}
+
+enum StatusCobranca {
+  PENDENTE
+  APROVADA
+  RECUSADA
+  CANCELADA
+  EXPIRADA
+}
+
+enum TipoItem {
+  SERVICO
+  PRODUTO
+}
+
+enum TipoLancamento {
+  ORCAMENTO_GERADO
+  ORCAMENTO_APROVADO
+  ORCAMENTO_REJEITADO
+  ORCAMENTO_EXPIRADO
+  ORCAMENTO_CANCELADO
+  COBRANCA_CRIADA
+  COBRANCA_CANCELADA
+  PAGAMENTO_APROVADO
+  PAGAMENTO_RECUSADO
+}
+
+model Orcamento {
+  id                 String          @id @db.Uuid
+  numeroOS           String          @map("numero_os")
+  clienteId          String          @map("cliente_id")
+  subtotal           Decimal         @db.Decimal(12, 2)
+  total              Decimal         @db.Decimal(12, 2)
+  validoAte          DateTime        @map("valido_ate") @db.Timestamptz(3)
+  status             StatusOrcamento
+  decididoEm         DateTime?       @map("decidido_em") @db.Timestamptz(3)
+  motivoRejeicao     String?         @map("motivo_rejeicao")
+  motivoCancelamento String?         @map("motivo_cancelamento")
+  version            Int             @default(1)
+
+  // Reentrega do callback ao OS Service (sem outbox: o evento e derivado do proprio agregado).
+  callbackId                String?   @map("callback_id") @db.Uuid
+  callbackUltimaTentativaEm DateTime? @map("callback_ultima_tentativa_em") @db.Timestamptz(3)
+  callbackEntregueEm        DateTime? @map("callback_entregue_em") @db.Timestamptz(3)
+
+  criadoEm     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  atualizadoEm DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  itens       OrcamentoItem[]
+  cobrancas   Cobranca[]
+  lancamentos Lancamento[]
+
+  @@index([numeroOS])
+  @@index([clienteId])
+  @@map("orcamento")
+}
+
+model OrcamentoItem {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  orcamentoId   String   @map("orcamento_id") @db.Uuid
+  posicao       Int
+  tipo          TipoItem
+  referenciaId  String   @map("referencia_id")
+  servicoId     String?  @map("servico_id")
+  nome          String
+  quantidade    Int
+  precoUnitario Decimal  @map("preco_unitario") @db.Decimal(12, 2)
+
+  orcamento Orcamento @relation(fields: [orcamentoId], references: [id], onDelete: Restrict)
+
+  @@unique([orcamentoId, posicao])
+  @@map("orcamento_item")
+}
+
+model Cobranca {
+  id               String         @id @db.Uuid
+  orcamentoId      String         @map("orcamento_id") @db.Uuid
+  numeroOS         String         @map("numero_os")
+  tentativa        Int
+  idempotencyKey   String         @unique @map("idempotency_key")
+  orderId          String?        @unique @map("order_id")
+  linkPagamento    String?        @map("checkout_url")
+  valor            Decimal        @db.Decimal(12, 2)
+  status           StatusCobranca
+  pagoEm           DateTime?      @map("pago_em") @db.Timestamptz(3)
+  recusadaEm       DateTime?      @map("recusada_em") @db.Timestamptz(3)
+  motivoRecusa     String?        @map("motivo_recusa")
+  ultimaConsultaEm DateTime?      @map("ultima_consulta_em") @db.Timestamptz(3)
+  version          Int            @default(1)
+
+  callbackId                String?   @map("callback_id") @db.Uuid
+  callbackUltimaTentativaEm DateTime? @map("callback_ultima_tentativa_em") @db.Timestamptz(3)
+  callbackEntregueEm        DateTime? @map("callback_entregue_em") @db.Timestamptz(3)
+
+  criadoEm     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  atualizadoEm DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  orcamento Orcamento @relation(fields: [orcamentoId], references: [id], onDelete: Restrict)
+
+  @@unique([orcamentoId, tentativa])
+  @@index([numeroOS])
+  @@map("cobranca")
+}
+
+/// Append-only: UPDATE/DELETE sao bloqueados por trigger (ver migration).
+model Lancamento {
+  id          String         @id @default(uuid(7)) @db.Uuid
+  tipo        TipoLancamento
+  valor       Decimal        @db.Decimal(12, 2)
+  numeroOS    String         @map("numero_os")
+  orcamentoId String         @map("orcamento_id") @db.Uuid
+  orderId     String?        @map("order_id")
+  ocorridoEm  DateTime       @map("ocorrido_em") @db.Timestamptz(3)
+
+  orcamento Orcamento @relation(fields: [orcamentoId], references: [id], onDelete: Restrict)
+
+  @@index([numeroOS])
+  @@map("ledger")
+}
+
+model WebhookMercadoPago {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  orderId          String   @map("order_id")
+  xRequestId       String   @map("x_request_id")
+  action           String?
+  payload          Json
+  assinaturaValida Boolean  @map("assinatura_valida")
+  recebidoEm       DateTime @map("recebido_em") @db.Timestamptz(3)
+
+  @@unique([orderId, xRequestId])
+  @@map("webhook_mercado_pago")
+}

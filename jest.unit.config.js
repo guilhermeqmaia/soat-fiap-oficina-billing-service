@@ -14,6 +14,7 @@ module.exports = {
     '!**/*.module.ts',
     '!**/test/**',
     '!**/prisma/**', // PrismaService e infra: coberto pelo e2e (testcontainers)
+    '!**/infrastructure/prisma-*.repository.ts', // coberto pelo jest.integration (banco real)
     '!**/*.spec.ts',
   ],
   coverageDirectory: '../coverage/unit',

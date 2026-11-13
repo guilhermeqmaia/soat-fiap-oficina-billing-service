@@ -1,4 +1,4 @@
-# Variaveis NAO sensiveis. Segredos: Secret `oficina-billing-service-app` (JWT_SECRET)
+# Variaveis NAO sensiveis. Segredos: Secret `oficina-billing-service-app` (JWT_SECRET e MP_*)
 # e `oficina-billing-service-db` (DATABASE_URL), ambos sincronizados pelo CD.
 apiVersion: v1
 kind: ConfigMap
@@ -16,6 +16,10 @@ data:
   # OS Service pelo DNS interno do cluster (RFC-0008): callbacks POST /ordens-servico/{numero}/eventos.
   # Chamadas entre servicos nao passam pelo API Gateway.
   OS_SERVICE_URL: 'http://oficina-app:3000'
+  # Retorno do checkout do Mercado Pago: {base}/sucesso, /falha e /pendente.
+  MP_RETORNO_BASE_URL: 'https://exemplo.com/pagamento'
+  MP_ORDER_EXPIRACAO: 'P1D'
+  ORCAMENTO_VALIDADE_DIAS: '7'
   DD_TRACE_ENABLED: 'true'
   DD_SERVICE: 'oficina-billing-service'
   DD_ENV: 'producao'

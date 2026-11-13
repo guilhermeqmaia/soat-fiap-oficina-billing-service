@@ -127,6 +127,7 @@ jobs:
         env:
           DB_SECRET_ID: ${{ vars.DB_SECRET_ID }}
           JWT_SECRET_ID: ${{ vars.JWT_SECRET_ID }}
+          MP_SECRET_ID: ${{ vars.MP_SECRET_ID }}
         run: |
           set -euo pipefail
           kubectl get namespace oficina >/dev/null 2>&1 || kubectl create namespace oficina
@@ -158,6 +159,18 @@ jobs:
           if [ -z "$JWT_SECRET" ]; then
             echo "::error::JWT_SECRET_ID nao resolveu um segredo — a app nao valida os tokens da Lambda."; exit 1
           fi
+          # --- Mercado Pago (ADR-0012): nunca no repo; o servico nao sobe em producao sem elas.
+          if [ -z "${MP_SECRET_ID}" ]; then
+            echo "::error::Defina a var MP_SECRET_ID (secret JSON do Mercado Pago no Secrets Manager)."; exit 1
+          fi
+          MP_JSON=$(aws secretsmanager get-secret-value --secret-id "$MP_SECRET_ID" \
+                      --query SecretString --output text)
+          MP_ACCESS_TOKEN=$(printf '%s' "$MP_JSON" | jq -r '.MP_ACCESS_TOKEN // empty')
+          MP_WEBHOOK_SECRET=$(printf '%s' "$MP_JSON" | jq -r '.MP_WEBHOOK_SECRET // empty')
+          MP_PAYER_EMAIL=$(printf '%s' "$MP_JSON" | jq -r '.MP_PAYER_EMAIL // empty')
+          if [ -z "$MP_ACCESS_TOKEN" ] || [ -z "$MP_WEBHOOK_SECRET" ] || [ -z "$MP_PAYER_EMAIL" ]; then
+            echo "::error::MP_SECRET_ID precisa conter MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET e MP_PAYER_EMAIL."; exit 1
+          fi
           # O kustomize da base referencia k8s/secret.yaml (nao versionado).
           cat > k8s/secret.yaml <<YAML
           apiVersion: v1
@@ -167,6 +180,9 @@ jobs:
           type: Opaque
           stringData:
             JWT_SECRET: "${JWT_SECRET}"
+            MP_ACCESS_TOKEN: "${MP_ACCESS_TOKEN}"
+            MP_WEBHOOK_SECRET: "${MP_WEBHOOK_SECRET}"
+            MP_PAYER_EMAIL: "${MP_PAYER_EMAIL}"
           YAML
           sed -i 's/^          //' k8s/secret.yaml
 

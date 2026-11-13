@@ -28,9 +28,31 @@ jobs:
       - name: Integracao/e2e (testcontainers)
         run: npm run test:integration
       - run: npm run build
+      - name: OpenAPI acompanha o codigo
+        run: npm run openapi:export && git diff --exit-code openapi.yaml
+      - name: Lint do OpenAPI
+        run: npx -y @redocly/cli@2.77.0 lint openapi.yaml
+      - name: AsyncAPI igual ao do hub
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/guilhermeqmaia/soat-fiap-oficina-os-service/main/docs/contratos/asyncapi.yaml \
+            | diff - docs/contratos/asyncapi.yaml
       - uses: actions/upload-artifact@v4
         with: { name: coverage, path: coverage/unit/lcov.info, retention-days: 7 }
       - run: npm audit --omit=dev --audit-level=high
+
+  bdd:
+    name: BDD (Gherkin + Cucumber)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: npm }
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run test:bdd
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: cucumber-report, path: reports/cucumber.html, retention-days: 14 }
 
   docker:
     name: Build da imagem
@@ -43,13 +65,13 @@ jobs:
   sonarcloud:
     name: SonarCloud (quality gate)
     runs-on: ubuntu-latest
-    needs: quality
+    needs: [quality, bdd]
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: npm }
-      - run: npm ci && npx prisma generate && npm run test:unit:cov
+      - run: npm ci && npx prisma generate && npm run test:all:cov
       - name: Analise
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@v5

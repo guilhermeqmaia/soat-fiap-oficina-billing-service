@@ -16,4 +16,24 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...ok, JWT_SECRET: 'curto' })).not.toThrow());
   it('exige DATABASE_URL postgres', () =>
     expect(() => validateEnv({ ...ok, DATABASE_URL: 'mysql://x' })).toThrow(/DATABASE_URL/));
+  it('em producao exige as variaveis do Billing', () => {
+    const producao = {
+      ...ok,
+      NODE_ENV: 'production',
+      JWT_SECRET: 'x'.repeat(40),
+      OS_SERVICE_URL: 'http://os',
+      MP_ACCESS_TOKEN: 't',
+      MP_WEBHOOK_SECRET: 's',
+      MP_PAYER_EMAIL: 'e@e.com',
+    };
+    expect(validateEnv(producao)).toBe(producao);
+    for (const nome of [
+      'OS_SERVICE_URL',
+      'MP_ACCESS_TOKEN',
+      'MP_WEBHOOK_SECRET',
+      'MP_PAYER_EMAIL',
+    ]) {
+      expect(() => validateEnv({ ...producao, [nome]: '' })).toThrow(nome);
+    }
+  });
 });

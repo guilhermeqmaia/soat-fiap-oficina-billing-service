@@ -8,11 +8,17 @@ import { CorrelationIdMiddleware, LoggerModule } from '@guilhermeqmaia/oficina-k
 import { MetricsModule } from '@guilhermeqmaia/oficina-kit/metrics';
 import { HealthModule } from '@guilhermeqmaia/oficina-kit/health';
 import { InProcessMessagingModule } from '@guilhermeqmaia/oficina-kit/messaging';
+import { HttpInternoModule } from '@guilhermeqmaia/oficina-kit/http';
+import { ScheduleModule } from '@nestjs/schedule';
 import { validateEnv } from './config/env.validation';
 import { SERVICE_NAME } from './config/service-name';
 import { THROTTLER_LIMIT, THROTTLER_TTL_MS, shouldSkipThrottling } from './config/throttler.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { PrismaHealthIndicator } from './health/prisma-health.indicator';
+import { OrcamentoModule } from './orcamento/orcamento.module';
+
+/** `sub` do JWT de servico e `producer` dos callbacks (http-interno.md). */
+const SERVICE_NAME_INTERNO = 'billing-service';
 
 @Module({
   imports: [
@@ -43,7 +49,16 @@ import { PrismaHealthIndicator } from './health/prisma-health.indicator';
     }),
     // --- este servico ---
     PrismaModule,
-    // TODO: modulos de dominio (ex.: OrcamentoModule)
+    ScheduleModule.forRoot(),
+    HttpInternoModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (c: ConfigService) => ({
+        servico: SERVICE_NAME_INTERNO,
+        jwtSecret: c.getOrThrow<string>('JWT_SECRET'),
+        issuer: c.get<string>('JWT_ISSUER'),
+      }),
+    }),
+    OrcamentoModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
