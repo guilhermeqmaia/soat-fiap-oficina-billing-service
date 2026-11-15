@@ -4,20 +4,21 @@ import * as path from 'path';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import jestOpenAPI from 'jest-openapi';
-import nock from 'nock';
 import request from 'supertest';
 import {
+  AppDeTeste,
   ate,
   CallbackRecebido,
+  callbacksRecebidos,
   cabecalhosWebhook,
   corpoOrcamento,
-  mpConsultandoOrder,
-  mpCriandoOrder,
-  osRecebendoCallbacks,
+  pararApp,
   subirApp,
   tokenCliente,
   tokenServico,
 } from '../test/app-harness';
+import { MercadoPagoFake } from '../test/mercado-pago-fake';
+import { ServidorHttpFake } from '../test/servidor-http-fake';
 import { startTestDatabase, stopTestDatabase } from '../test/database.container';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -63,14 +64,17 @@ const ENVELOPE = {
 };
 
 describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
+  let teste: AppDeTeste;
   let app: INestApplication;
+  let os: ServidorHttpFake;
+  let mp: MercadoPagoFake;
   let seq = 0;
   let numero: string;
-  let callbacks: CallbackRecebido[];
   const ajv = new Ajv({ allErrors: true, strict: false });
   addFormats(ajv);
 
   const http = () => request(app.getHttpServer());
+  const callbacks = () => callbacksRecebidos(os);
   const gerar = () =>
     http().post('/orcamentos').set('Authorization', tokenServico()).send(corpoOrcamento(numero));
 
@@ -88,20 +92,20 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
 
   beforeAll(async () => {
     process.env.DATABASE_URL = await startTestDatabase();
-    app = await subirApp();
+    teste = await subirApp();
+    ({ app, os, mp } = teste);
     // O arquivo publicado, nao um documento gerado na hora: o CI garante que ele acompanha o codigo.
     jestOpenAPI(lerYaml('openapi.yaml'));
   });
 
   afterAll(async () => {
-    nock.restore();
-    await app.close();
+    await pararApp(teste);
     await stopTestDatabase();
   });
 
   beforeEach(() => {
-    nock.cleanAll();
-    callbacks = [];
+    os.limpar();
+    mp.limpar();
     numero = `OS-CT-${++seq}`;
   });
 
@@ -114,16 +118,15 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
 
   it('aprovar, cobrar, webhook e callbacks de sucesso', async () => {
     await gerar().expect(201);
-    osRecebendoCallbacks(callbacks);
     const aprovado = await http()
       .post(`/orcamentos/${numero}/aprovar`)
       .set('Authorization', tokenCliente('cli-1'))
       .expect(200);
     expect(aprovado).toSatisfyApiSpec();
-    await ate(() => callbacks.length === 1);
+    await ate(() => callbacks().length === 1);
 
     const orderId = `ORDCT${seq}`;
-    mpCriandoOrder(orderId);
+    mp.criando(orderId);
     const cobranca = await http()
       .post(`/orcamentos/${numero}/cobrar`)
       .set('Authorization', tokenServico())
@@ -144,55 +147,51 @@ describe('Contrato HTTP (docs/contratos/http-interno.md)', () => {
         .expect(200),
     ).toSatisfyApiSpec();
 
-    osRecebendoCallbacks(callbacks);
-    mpConsultandoOrder(orderId, { status: 'processed', status_detail: 'accredited' });
+    mp.consultando(orderId, { status: 'processed', status_detail: 'accredited' });
     const webhook = await http()
       .post(`/webhooks/mercadopago?type=order&data.id=${orderId}`)
       .set(cabecalhosWebhook(orderId))
       .send({ action: 'order.processed', data: { id: orderId } })
       .expect(200);
     expect(webhook).toSatisfyApiSpec();
-    await ate(() => callbacks.length === 2);
-    callbacks.forEach(validarCallback);
+    await ate(() => callbacks().length === 2);
+    callbacks().forEach(validarCallback);
   });
 
   it('rejeicao e pagamento recusado seguem o schema do callback', async () => {
     await gerar().expect(201);
-    osRecebendoCallbacks(callbacks);
     const rejeitado = await http()
       .post(`/orcamentos/${numero}/rejeitar`)
       .set('Authorization', tokenCliente('cli-1'))
       .send({ motivo: 'caro' })
       .expect(200);
     expect(rejeitado).toSatisfyApiSpec();
-    await ate(() => callbacks.length === 1);
-    validarCallback(callbacks[0]);
+    await ate(() => callbacks().length === 1);
+    validarCallback(callbacks()[0]);
   });
 
   it('pagamento recusado segue o schema do callback', async () => {
     await gerar().expect(201);
-    osRecebendoCallbacks(callbacks);
     await http()
       .post(`/orcamentos/${numero}/aprovar`)
       .set('Authorization', tokenCliente('cli-1'))
       .expect(200);
-    await ate(() => callbacks.length === 1);
+    await ate(() => callbacks().length === 1);
     const orderId = `ORDCTR${seq}`;
-    mpCriandoOrder(orderId);
+    mp.criando(orderId);
     await http()
       .post(`/orcamentos/${numero}/cobrar`)
       .set('Authorization', tokenServico())
       .expect(201);
-    osRecebendoCallbacks(callbacks);
-    mpConsultandoOrder(orderId, { status: 'failed', status_detail: 'cc_rejected' });
+    mp.consultando(orderId, { status: 'failed', status_detail: 'cc_rejected' });
     await http()
       .post(`/webhooks/mercadopago?type=order&data.id=${orderId}`)
       .set(cabecalhosWebhook(orderId))
       .send({ action: 'order.processed', data: { id: orderId } })
       .expect(200);
-    await ate(() => callbacks.length === 2);
-    expect(callbacks[1].corpo.type).toBe('billing.pagamento-recusado');
-    validarCallback(callbacks[1]);
+    await ate(() => callbacks().length === 2);
+    expect(callbacks()[1].corpo.type).toBe('billing.pagamento-recusado');
+    validarCallback(callbacks()[1]);
   });
 
   it('409 { motivo } de cobrar nao aprovado', async () => {

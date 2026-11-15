@@ -16,7 +16,7 @@ e a parte deste repositório das US-F4-13, 14, 15 e 18.
 | Comando                    | O que valida                                                              |
 | -------------------------- | ------------------------------------------------------------------------- |
 | `npm run test:unit:cov`    | Domínio, casos de uso e adapters, com gate de 80%                         |
-| `npm run test:integration` | Fluxos HTTP com Postgres real; OS e Mercado Pago interceptados por `nock` |
+| `npm run test:integration` | Fluxos HTTP com Postgres real; OS como servidor HTTP local e Mercado Pago como fake do SDK (sem `nock`) |
 | `npm run test:bdd`         | Cenários Gherkin em `features/`; relatório em `reports/cucumber.html`     |
 | `npm run openapi:export`   | Gera o `openapi.yaml` publicado no hub                                    |
 

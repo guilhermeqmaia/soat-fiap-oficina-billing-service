@@ -1,23 +1,48 @@
 import { createHmac, randomUUID } from 'crypto';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import nock from 'nock';
 import { mintServiceToken, mintToken } from '@guilhermeqmaia/oficina-kit/testing';
 import { Role } from '@guilhermeqmaia/oficina-kit/auth';
 import { AppModule } from '../app.module';
+import { OS_SERVICE_URL } from '../orcamento/infrastructure/http-callback-os.gateway';
+import { MP_ORDER_CLIENT } from '../orcamento/infrastructure/mercado-pago-sdk.gateway';
+import { MercadoPagoFake } from './mercado-pago-fake';
+import { ServidorHttpFake } from './servidor-http-fake';
 
-export const OS_URL = 'http://os-service.test';
-export const MP_URL = 'https://api.mercadopago.com';
+/** Resposta do OS a um callback aplicado (`POST /ordens-servico/{n}/eventos`). */
+export const CALLBACK_APLICADO = { aplicado: true, passo: 'X', status: 'EM_ANDAMENTO' };
 
-/** Mesma configuracao HTTP do `main.ts`, com OS e Mercado Pago interceptados por nock. */
-export async function subirApp(): Promise<INestApplication> {
-  const ref = await Test.createTestingModule({ imports: [AppModule] }).compile();
+export interface AppDeTeste {
+  readonly app: INestApplication;
+  /** OS Service: servidor HTTP real em 127.0.0.1 que grava os callbacks. */
+  readonly os: ServidorHttpFake;
+  /** Mercado Pago: fake da classe `Order` do SDK, com respostas roteirizadas. */
+  readonly mp: MercadoPagoFake;
+}
+
+/**
+ * Mesma configuracao HTTP do `main.ts`. Sem interceptar o modulo `http` (nock):
+ * o OS e um servidor local de verdade e o Mercado Pago entra por provider.
+ */
+export async function subirApp(): Promise<AppDeTeste> {
+  const os = new ServidorHttpFake({ status: 200, body: CALLBACK_APLICADO });
+  await os.iniciar();
+  const mp = new MercadoPagoFake();
+  const ref = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(OS_SERVICE_URL)
+    .useValue(os.url)
+    .overrideProvider(MP_ORDER_CLIENT)
+    .useValue(mp)
+    .compile();
   const app = ref.createNestApplication();
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   await app.init();
-  nock.disableNetConnect();
-  nock.enableNetConnect(/127\.0\.0\.1|localhost/);
-  return app;
+  return { app, os, mp };
+}
+
+export async function pararApp(teste: AppDeTeste | undefined): Promise<void> {
+  await teste?.app.close();
+  await teste?.os.parar();
 }
 
 export const tokenServico = () => `Bearer ${mintServiceToken({ servico: 'os-service' })}`;
@@ -65,38 +90,15 @@ export interface CallbackRecebido {
   autorizacao: string;
 }
 
-/** Simula o OS Service aceitando callbacks e guarda o que chegou. */
-export function osRecebendoCallbacks(destino: CallbackRecebido[], vezes = 1, status = 200): void {
-  nock(OS_URL)
-    .post(/\/ordens-servico\/.+\/eventos/)
-    .times(vezes)
-    .reply(function (uri, corpo) {
-      destino.push({
-        numero: decodeURIComponent(uri.split('/')[2]),
-        corpo: corpo as Record<string, unknown>,
-        autorizacao: String(this.req.headers.authorization),
-      });
-      return [status, { aplicado: status === 200, passo: 'X', status: 'EM_ANDAMENTO' }];
-    });
-}
-
-export function mpCriandoOrder(orderId: string, corpos: unknown[] = []): void {
-  nock(MP_URL)
-    .post('/v1/orders')
-    .reply(201, (_uri, corpo) => {
-      corpos.push(corpo);
-      return { id: orderId, status: 'created', checkout_url: `https://mp.test/${orderId}` };
-    });
-}
-
-export function mpConsultandoOrder(orderId: string, order: Record<string, unknown>): void {
-  nock(MP_URL)
-    .get(`/v1/orders/${orderId}`)
-    .reply(200, { id: orderId, ...order });
-}
-
-export function mpCancelandoOrder(orderId: string): void {
-  nock(MP_URL).post(`/v1/orders/${orderId}/cancel`).reply(200, { id: orderId, status: 'canceled' });
+/** Callbacks que chegaram ao OS fake, na ordem. */
+export function callbacksRecebidos(os: ServidorHttpFake): CallbackRecebido[] {
+  return os.recebidas
+    .filter((r) => r.method === 'POST' && /^\/ordens-servico\/.+\/eventos$/.test(r.url))
+    .map((r) => ({
+      numero: decodeURIComponent(r.url.split('/')[2]),
+      corpo: r.body as Record<string, any>,
+      autorizacao: String(r.headers.authorization),
+    }));
 }
 
 /** Polling sem `sleep` fixo: callbacks saem depois da resposta HTTP. */

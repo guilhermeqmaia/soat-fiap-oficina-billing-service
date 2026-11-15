@@ -1,21 +1,16 @@
 import { strict as assert } from 'assert';
 import { Given, Then, When } from '@cucumber/cucumber';
-import nock from 'nock';
 import request from 'supertest';
 import {
   ate,
   cabecalhosWebhook,
   corpoOrcamento,
-  mpCancelandoOrder,
-  mpConsultandoOrder,
-  mpCriandoOrder,
-  osRecebendoCallbacks,
   tokenCliente,
   tokenServico,
 } from '../../src/test/app-harness';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { ReconciliarUseCase } from '../../src/orcamento/application/use-cases/reconciliar.use-case';
-import { app, BillingWorld } from '../support/world';
+import { app, BillingWorld, mp, os } from '../support/world';
 
 const http = () => request(app.getHttpServer());
 const prisma = () => app.get(PrismaService);
@@ -58,23 +53,21 @@ Given('que o orcamento ja foi gerado', async function (this: BillingWorld) {
 });
 
 Given('que o cliente ja aprovou o orcamento', async function (this: BillingWorld) {
-  osRecebendoCallbacks(this.callbacks);
   await decidir(this, 'aprovar').expect(200);
   await ate(() => this.callbacks.length === 1);
   await callbackEntregue(this);
-  this.callbacks.length = 0;
+  os.limpar();
 });
 
 Given('que a cobranca ja foi criada', async function (this: BillingWorld) {
-  mpCriandoOrder(this.orderId);
+  mp.criando(this.orderId);
   await cobrar(this).expect(201);
 });
 
 Given(
   'que o Mercado Pago informa a order como {string} com detalhe {string}',
   function (this: BillingWorld, status: string, detalhe: string) {
-    mpConsultandoOrder(this.orderId, { status, status_detail: detalhe });
-    if (status !== 'action_required') osRecebendoCallbacks(this.callbacks);
+    mp.consultando(this.orderId, { status, status_detail: detalhe });
   },
 );
 
@@ -91,8 +84,8 @@ Given(
 );
 
 When('o OS Service solicita uma nova cobranca', async function (this: BillingWorld) {
-  mpCancelandoOrder(this.orderId);
-  mpCriandoOrder(`${this.orderId}N`);
+  mp.cancelando(this.orderId);
+  mp.criando(`${this.orderId}N`);
   this.resposta = await cobrar(this);
 });
 
@@ -108,14 +101,12 @@ When('o OS Service cancela o orcamento', async function (this: BillingWorld) {
 });
 
 When('o cliente aprova o orcamento', async function (this: BillingWorld) {
-  osRecebendoCallbacks(this.callbacks);
   this.resposta = await decidir(this, 'aprovar');
 });
 
 When(
   'o cliente rejeita o orcamento com o motivo {string}',
   async function (this: BillingWorld, motivo: string) {
-    osRecebendoCallbacks(this.callbacks);
     this.resposta = await decidir(this, 'rejeitar', 'cli-1', motivo);
   },
 );
@@ -125,7 +116,7 @@ When('outro cliente tenta aprovar o orcamento', async function (this: BillingWor
 });
 
 When('o OS Service solicita a cobranca', async function (this: BillingWorld) {
-  mpCriandoOrder(this.orderId);
+  mp.criando(this.orderId);
   this.resposta = await cobrar(this);
 });
 
@@ -215,7 +206,7 @@ Then('a resposta traz uma nova order', function (this: BillingWorld) {
 });
 
 Then('a order anterior e cancelada no Mercado Pago', function () {
-  assert.deepEqual(nock.pendingMocks(), []);
+  assert.deepEqual(mp.pendentes(), []);
 });
 
 Then('a resposta informa o motivo', function (this: BillingWorld) {
