@@ -16,7 +16,13 @@ import { Cobranca } from '../domain/cobranca.entity';
 import { Dinheiro } from '../domain/dinheiro.vo';
 import { ConcorrenciaError, RegistroDuplicadoError } from '../domain/errors';
 import { Orcamento } from '../domain/orcamento.entity';
-import { EstadoCallback, StatusCobranca, StatusOrcamento, TipoItem } from '../domain/tipos';
+import {
+  EstadoCallback,
+  MAX_FALHAS_CALLBACK,
+  StatusCobranca,
+  StatusOrcamento,
+  TipoItem,
+} from '../domain/tipos';
 
 type OrcamentoComItens = OrcamentoRow & { itens: ItemRow[] };
 
@@ -30,12 +36,14 @@ function callback(row: {
   callbackId: string | null;
   callbackUltimaTentativaEm: Date | null;
   callbackEntregueEm: Date | null;
+  callbackFalhas: number;
 }): EstadoCallback | null {
   if (!row.callbackId || !row.callbackUltimaTentativaEm) return null;
   return {
     id: row.callbackId,
     ultimaTentativaEm: row.callbackUltimaTentativaEm,
     entregueEm: row.callbackEntregueEm,
+    falhas: row.callbackFalhas,
   };
 }
 
@@ -44,6 +52,7 @@ function colunasCallback(estado: EstadoCallback | null) {
     callbackId: estado?.id ?? null,
     callbackUltimaTentativaEm: estado?.ultimaTentativaEm ?? null,
     callbackEntregueEm: estado?.entregueEm ?? null,
+    callbackFalhas: estado?.falhas ?? 0,
   };
 }
 
@@ -263,6 +272,22 @@ export class PrismaBillingRepository implements BillingRepository {
     });
   }
 
+  async registrarFalhaCallbackOrcamento(id: string, callbackId: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ falhas: number }>>`
+      UPDATE orcamento SET callback_falhas = callback_falhas + 1
+      WHERE id = ${id}::uuid AND callback_id = ${callbackId}::uuid
+      RETURNING callback_falhas AS falhas`;
+    return rows[0]?.falhas ?? 0;
+  }
+
+  async registrarFalhaCallbackCobranca(id: string, callbackId: string): Promise<number> {
+    const rows = await this.prisma.$queryRaw<Array<{ falhas: number }>>`
+      UPDATE cobranca SET callback_falhas = callback_falhas + 1
+      WHERE id = ${id}::uuid AND callback_id = ${callbackId}::uuid
+      RETURNING callback_falhas AS falhas`;
+    return rows[0]?.falhas ?? 0;
+  }
+
   async reservarOrcamentosComCallback(limite: Date, agora: Date, lote: number) {
     const ids = await this.prisma.$queryRaw<Array<{ id: string }>>`
       UPDATE orcamento SET callback_ultima_tentativa_em = ${agora}
@@ -270,6 +295,7 @@ export class PrismaBillingRepository implements BillingRepository {
         SELECT id FROM orcamento
         WHERE status IN ('APROVADO', 'REJEITADO')
           AND callback_id IS NOT NULL AND callback_entregue_em IS NULL
+          AND callback_falhas < ${MAX_FALHAS_CALLBACK}
           AND callback_ultima_tentativa_em <= ${limite}
         ORDER BY callback_ultima_tentativa_em LIMIT ${lote} FOR UPDATE SKIP LOCKED
       ) RETURNING id`;
@@ -287,18 +313,22 @@ export class PrismaBillingRepository implements BillingRepository {
         SELECT id FROM cobranca
         WHERE status IN ('APROVADA', 'RECUSADA', 'EXPIRADA')
           AND callback_id IS NOT NULL AND callback_entregue_em IS NULL
+          AND callback_falhas < ${MAX_FALHAS_CALLBACK}
           AND callback_ultima_tentativa_em <= ${limite}
         ORDER BY callback_ultima_tentativa_em LIMIT ${lote} FOR UPDATE SKIP LOCKED
       ) RETURNING id`;
     return this.cobrancasPorIds(ids);
   }
 
-  async reservarCobrancasPendentes(limite: Date, agora: Date, lote: number) {
+  async reservarCobrancasPendentes(limite: Date, recusadasDesde: Date, agora: Date, lote: number) {
+    // RECUSADA entra ate a order expirar: o cliente pode pagar no mesmo checkout
+    // depois da recusa, e o webhook desse pagamento pode se perder.
     const ids = await this.prisma.$queryRaw<Array<{ id: string }>>`
       UPDATE cobranca SET ultima_consulta_em = ${agora}
       WHERE id IN (
         SELECT id FROM cobranca
-        WHERE status = 'PENDENTE' AND order_id IS NOT NULL
+        WHERE (status = 'PENDENTE' OR (status = 'RECUSADA' AND created_at >= ${recusadasDesde}))
+          AND order_id IS NOT NULL
           AND COALESCE(ultima_consulta_em, created_at) <= ${limite}
         ORDER BY created_at LIMIT ${lote} FOR UPDATE SKIP LOCKED
       ) RETURNING id`;

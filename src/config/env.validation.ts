@@ -1,3 +1,5 @@
+import { duracaoIsoMs } from './duracao-iso';
+
 /**
  * Fail-fast no boot (`ConfigModule.forRoot({ validate })`): sem JWT_SECRET o
  * servico nao valida os tokens da Lambda; sem DATABASE_URL nao ha banco proprio.
@@ -27,6 +29,10 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   }
   if (typeof config.DATABASE_URL !== 'string' || !config.DATABASE_URL.startsWith('postgres')) {
     throw new Error('DATABASE_URL e obrigatoria (banco proprio deste servico).');
+  }
+  const expiracao = config.MP_ORDER_EXPIRACAO;
+  if (expiracao !== undefined && (typeof expiracao !== 'string' || !duracaoIsoMs(expiracao))) {
+    throw new Error('MP_ORDER_EXPIRACAO deve ser uma duracao ISO 8601 (ex.: P1D, PT12H).');
   }
   if (config.NODE_ENV === 'production') {
     for (const nome of OBRIGATORIAS_EM_PRODUCAO) {

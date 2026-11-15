@@ -4,7 +4,11 @@ import { EntregaCallbacksService } from '../entrega-callbacks.service';
 import { BILLING_CONFIG, BillingConfig } from '../ports/billing.config';
 import { ProcessarOrderUseCase } from './processar-order.use-case';
 
-/** Recuperacao para frente: reenvia callbacks nao confirmados e consulta orders pendentes. */
+/**
+ * Recuperacao para frente: reenvia callbacks nao confirmados e consulta orders
+ * pendentes — e as recusadas ainda pagaveis, cujo pagamento posterior pode ter
+ * perdido o webhook.
+ */
 @Injectable()
 export class ReconciliarUseCase {
   private readonly logger = new Logger(ReconciliarUseCase.name);
@@ -17,7 +21,8 @@ export class ReconciliarUseCase {
   ) {}
 
   async execute(agora: Date = new Date()): Promise<void> {
-    const { reentregaCallbackMs, reconciliacaoMs, loteReconciliacao: lote } = this.config;
+    const { reentregaCallbackMs, reconciliacaoMs, janelaPagamentoMs } = this.config;
+    const lote = this.config.loteReconciliacao;
     const limiteCallback = new Date(agora.getTime() - reentregaCallbackMs);
 
     const orcamentos = await this.repositorio.reservarOrcamentosComCallback(
@@ -36,6 +41,7 @@ export class ReconciliarUseCase {
 
     const pendentes = await this.repositorio.reservarCobrancasPendentes(
       new Date(agora.getTime() - reconciliacaoMs),
+      new Date(agora.getTime() - janelaPagamentoMs),
       agora,
       lote,
     );

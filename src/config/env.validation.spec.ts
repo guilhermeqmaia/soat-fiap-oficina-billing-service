@@ -14,6 +14,10 @@ describe('validateEnv', () => {
     ));
   it('tolera segredo curto fora de producao', () =>
     expect(() => validateEnv({ ...ok, JWT_SECRET: 'curto' })).not.toThrow());
+  it('MP_ORDER_EXPIRACAO precisa ser duracao ISO 8601', () => {
+    expect(() => validateEnv({ ...ok, MP_ORDER_EXPIRACAO: 'P2D' })).not.toThrow();
+    expect(() => validateEnv({ ...ok, MP_ORDER_EXPIRACAO: '1 dia' })).toThrow(/MP_ORDER_EXPIRACAO/);
+  });
   it('exige DATABASE_URL postgres', () =>
     expect(() => validateEnv({ ...ok, DATABASE_URL: 'mysql://x' })).toThrow(/DATABASE_URL/));
   it('em producao exige as variaveis do Billing', () => {

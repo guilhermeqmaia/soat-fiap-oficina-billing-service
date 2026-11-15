@@ -83,7 +83,16 @@ Given(
   },
 );
 
+Given(
+  'que o cliente pagou depois a mesma order sem o webhook chegar',
+  function (this: BillingWorld) {
+    os.limpar();
+    mp.consultando(this.orderId, { status: 'processed', status_detail: 'accredited' });
+  },
+);
+
 When('o OS Service solicita uma nova cobranca', async function (this: BillingWorld) {
+  mp.consultando(this.orderId, { status: 'failed', status_detail: 'cc_rejected' });
   mp.cancelando(this.orderId);
   mp.criando(`${this.orderId}N`);
   this.resposta = await cobrar(this);
@@ -200,6 +209,14 @@ Then(
     assert.equal(this.resposta.body.valor, valor);
   },
 );
+
+Then('a resposta mantem a order ja paga', function (this: BillingWorld) {
+  assert.equal(this.resposta.body.orderId, this.orderId);
+});
+
+Then('nenhum webhook e gravado', async function (this: BillingWorld) {
+  assert.equal(await prisma().webhookMercadoPago.count({ where: { orderId: this.orderId } }), 0);
+});
 
 Then('a resposta traz uma nova order', function (this: BillingWorld) {
   assert.equal(this.resposta.body.orderId, `${this.orderId}N`);

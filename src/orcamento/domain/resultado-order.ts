@@ -11,6 +11,21 @@ export type ResultadoOrder =
   | { readonly tipo: 'PENDENTE' };
 
 const STATUS_RECUSADOS = new Set(['failed', 'rejected', 'canceled', 'cancelled']);
+const STATUS_ENCERRADOS = new Set(['canceled', 'cancelled', 'expired']);
+
+/**
+ * O que a order anterior ainda permite antes de emitir outra cobranca:
+ * - `ENCERRADA`: cancelada ou expirada, ninguem paga mais por ela;
+ * - `PROCESSADA`: o pagamento passou, nao se emite outra order;
+ * - `PAGAVEL`: inclusive recusada — o cliente pode tentar de novo no mesmo checkout.
+ */
+export type EstadoOrderAnterior = 'ENCERRADA' | 'PROCESSADA' | 'PAGAVEL';
+
+export function estadoOrderAnterior(order: SituacaoOrder): EstadoOrderAnterior {
+  if (order.status && STATUS_ENCERRADOS.has(order.status)) return 'ENCERRADA';
+  if (order.status === 'processed') return 'PROCESSADA';
+  return 'PAGAVEL';
+}
 
 /**
  * Traduz o estado de `GET /v1/orders/{id}`. A tabela vem da documentacao do hub

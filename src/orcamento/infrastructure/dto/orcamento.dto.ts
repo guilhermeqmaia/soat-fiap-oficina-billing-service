@@ -106,6 +106,12 @@ export class MotivoDto {
   @ApiProperty() motivo: string;
 }
 
+export class ErroTransitorioDto {
+  @ApiProperty({ example: 503 }) statusCode: number;
+  @ApiProperty() message: string;
+  @ApiProperty({ example: 'Service Unavailable' }) error: string;
+}
+
 export class CobrancaDto {
   @ApiProperty({ type: String, nullable: true }) orderId: string | null;
   @ApiProperty() status: string;

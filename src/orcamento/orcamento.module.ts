@@ -15,6 +15,7 @@ import { ProcessarOrderUseCase } from './application/use-cases/processar-order.u
 import { ReceberWebhookUseCase } from './application/use-cases/receber-webhook.use-case';
 import { ReconciliarUseCase } from './application/use-cases/reconciliar.use-case';
 import { BILLING_REPOSITORY } from './domain/billing.repository';
+import { duracaoIsoMs } from '../config/duracao-iso';
 import { HttpCallbackOsGateway, OS_SERVICE_URL } from './infrastructure/http-callback-os.gateway';
 import {
   MercadoPagoSdkGateway,
@@ -29,6 +30,9 @@ import { RECONCILIACAO_ATIVA, ReconciliacaoJob } from './infrastructure/reconcil
 import { MP_WEBHOOK_SECRET, WebhookController } from './infrastructure/webhook.controller';
 
 const DIA_MS = 24 * 60 * 60 * 1000;
+const EXPIRACAO_ORDER_PADRAO = 'P1D';
+/** Folga sobre a expiracao da order para consultar uma cobranca RECUSADA. */
+const FOLGA_JANELA_PAGAMENTO_MS = 60 * 60 * 1000;
 /** Abaixo do timeout de 5 s do OS: uma falha aqui ainda cabe na tentativa seguinte dele. */
 const MP_TIMEOUT_MS = 4000;
 
@@ -56,6 +60,9 @@ const MP_TIMEOUT_MS = 4000;
         validadeOrcamentoMs: Number(c.get('ORCAMENTO_VALIDADE_DIAS') ?? 7) * DIA_MS,
         reentregaCallbackMs: Number(c.get('CALLBACK_REENTREGA_MS') ?? 120_000),
         reconciliacaoMs: Number(c.get('RECONCILIACAO_APOS_MS') ?? 15 * 60 * 1000),
+        janelaPagamentoMs:
+          (duracaoIsoMs(c.get<string>('MP_ORDER_EXPIRACAO') ?? EXPIRACAO_ORDER_PADRAO) ?? DIA_MS) +
+          FOLGA_JANELA_PAGAMENTO_MS,
         loteReconciliacao: Number(c.get('RECONCILIACAO_LOTE') ?? 50),
       }),
     },
@@ -90,8 +97,9 @@ const MP_TIMEOUT_MS = 4000;
       inject: [ConfigService],
       useFactory: (c: ConfigService): MercadoPagoOpcoes => ({
         payerEmail: c.get<string>('MP_PAYER_EMAIL') ?? '',
-        retornoBaseUrl: c.get<string>('MP_RETORNO_BASE_URL') ?? 'https://exemplo.com/pagamento',
-        expiracaoOrder: c.get<string>('MP_ORDER_EXPIRACAO') ?? 'P1D',
+        // Placeholder em dominio reservado (RFC 2606); o valor real e a URL do API Gateway.
+        retornoBaseUrl: c.get<string>('MP_RETORNO_BASE_URL') ?? 'https://example.com/pagamento',
+        expiracaoOrder: c.get<string>('MP_ORDER_EXPIRACAO') ?? EXPIRACAO_ORDER_PADRAO,
       }),
     },
   ],

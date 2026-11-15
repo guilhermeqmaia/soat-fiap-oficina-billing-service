@@ -41,16 +41,39 @@ export class OrcamentoConflitoError extends DomainError {
   }
 }
 
+/**
+ * Conflito transitorio, nao recusa de negocio: outra requisicao mexeu no mesmo
+ * agregado no mesmo instante. A API responde `503` (o OS repete 5xx e a
+ * repeticao e idempotente), nunca `409 { motivo }`, que a saga do OS trataria
+ * como "nao entregue" em `billing.cobrar` e deixaria parada no passo.
+ */
+export class ConflitoTransitorioError extends Error {
+  constructor(mensagem: string) {
+    super(mensagem);
+    this.name = new.target.name;
+  }
+}
+
 /** Outra requisicao alterou o agregado primeiro (versao otimista). */
-export class ConcorrenciaError extends OrcamentoConflitoError {
+export class ConcorrenciaError extends ConflitoTransitorioError {
   constructor(recurso: string) {
     super(`${recurso} alterado por outra requisicao; repita a operacao`);
   }
 }
 
 /** Corrida na criacao: o indice unico ja tem o registro; quem chamou rele o existente. */
-export class RegistroDuplicadoError extends OrcamentoConflitoError {
+export class RegistroDuplicadoError extends ConflitoTransitorioError {
   constructor() {
     super('Registro ja existente');
+  }
+}
+
+/**
+ * A order anterior foi processada no Mercado Pago, mas o pagamento ainda nao
+ * aparece como aprovado. Emitir outra order poderia cobrar duas vezes.
+ */
+export class OrderAnteriorEmProcessamentoError extends ConflitoTransitorioError {
+  constructor(orderId: string) {
+    super(`Order ${orderId} processada sem confirmacao do pagamento; repita a operacao`);
   }
 }

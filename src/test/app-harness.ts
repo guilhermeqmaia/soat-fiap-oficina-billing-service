@@ -76,8 +76,12 @@ export function corpoOrcamento(numeroOS: string, clienteId = 'cli-1') {
   };
 }
 
-export function cabecalhosWebhook(orderId: string, requestId: string = randomUUID()) {
-  const ts = String(Date.now());
+export function cabecalhosWebhook(
+  orderId: string,
+  requestId: string = randomUUID(),
+  assinadoEm = Date.now(),
+) {
+  const ts = String(assinadoEm);
   const v1 = createHmac('sha256', process.env.MP_WEBHOOK_SECRET as string)
     .update(`id:${orderId.toLowerCase()};request-id:${requestId};ts:${ts};`)
     .digest('hex');

@@ -19,19 +19,19 @@ Decisão de **03/11/2026** ([RFC-0008](https://github.com/guilhermeqmaia/soat-fi
 - **Quem chama quem:** o OS Service (orquestrador da saga, RFC-0005) chama este serviço; este serviço só chama o OS Service de volta, em `POST {OS_SERVICE_URL}/ordens-servico/{numero}/eventos` (envelope `{ id, type, version, occurredAt, producer, data }`). Retry 3x com backoff (200 ms, 800 ms, 3 s) só para `5xx`/timeout; `4xx` não repete.
 - **Rede:** chamadas entre serviços **não passam pelo API Gateway** — vão pelo DNS interno do cluster (`OS_SERVICE_URL=http://oficina-app:3000`, Service `oficina-app` no namespace `oficina`; em dev, `http://localhost:3000`). O gateway continua sendo a única borda pública e roteia por prefixo ([infra-k8s/gateway](https://github.com/guilhermeqmaia/soat-fiap-oficina-infra-k8s/tree/main/gateway)).
 - **Autenticação entre serviços:** JWT com `role: SERVICO` e `sub` = nome do serviço, assinado com o **mesmo `JWT_SECRET`** da Lambda (emitido localmente, `mintServiceToken` do kit). Endpoints internos e callbacks aceitam só `SERVICO`; endpoints de usuário continuam com os roles de hoje.
-- **Idempotência:** comandos por `numeroOS` (repetir não duplica efeito). `409 { motivo }` = recusa de negócio (vira o evento de falha na saga); `404` = recurso desconhecido (não repete).
+- **Idempotência:** comandos por `numeroOS` (repetir não duplica efeito). `409 { motivo }` = recusa de negócio (vira o evento de falha na saga); `404` = recurso desconhecido (não repete). Corrida entre duas chamadas iguais (ex.: repetição do OS depois do timeout de 5 s) nunca vira `409`: se a outra chamada já concluiu, a resposta é a mesma dela (`201`/`200`); senão é `503` com `Retry-After`, que o OS repete.
 - **Correlação:** `x-correlation-id` (= número da OS) e `traceparent` propagados em toda chamada e callback (kit `logging`).
 
 ### Endpoints que o Billing expõe
 
-| Endpoint                                              | Quem chama                                                          | Comando (vocabulário)        | Resposta = evento                                                                                     | Falha de negócio                                                   |
-| ----------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `POST /orcamentos` `{ numeroOS, clienteId, itens[] }` | OS Service (`SERVICO`)                                              | `billing.gerar-orcamento`    | `201 { numeroOS, orcamentoId, total, validoAte }` ≙ `billing.orcamento-gerado`                        | `409` se já existe orçamento ativo (devolve o existente com `200`) |
-| `POST /orcamentos/{numeroOS}/cobrar`                  | OS Service (`SERVICO`)                                              | `billing.cobrar`             | `201 { numeroOS, orderId, linkPagamento, valor }` ≙ `billing.cobranca-criada` (order no Mercado Pago) | `409 { motivo }` se o orçamento não está aprovado                  |
-| `DELETE /orcamentos/{numeroOS}` `{ motivo }`          | OS Service (`SERVICO`)                                              | `billing.cancelar-orcamento` | `200 { numeroOS, orcamentoId, estornado }` ≙ `billing.orcamento-cancelado`                            | — (idempotente)                                                    |
-| `POST /orcamentos/{numeroOS}/aprovar`                 | Cliente (`CLIENTE`, via gateway)                                    | —                            | `200` + callback `billing.orcamento-aprovado`                                                         | —                                                                  |
-| `POST /orcamentos/{numeroOS}/rejeitar`                | Cliente (`CLIENTE`, via gateway)                                    | —                            | `200` + callback `billing.orcamento-rejeitado`                                                        | —                                                                  |
-| `POST /webhooks/mercadopago`                          | Mercado Pago (público; assinatura `x-signature` validada, ADR-0012) | —                            | `200` + callback `billing.pagamento-aprovado` / `billing.pagamento-recusado`                          | —                                                                  |
+| Endpoint                                              | Quem chama                                                          | Comando (vocabulário)        | Resposta = evento                                                                                     | Falha de negócio                                                                                                |
+| ----------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `POST /orcamentos` `{ numeroOS, clienteId, itens[] }` | OS Service (`SERVICO`)                                              | `billing.gerar-orcamento`    | `201 { numeroOS, orcamentoId, total, validoAte }` ≙ `billing.orcamento-gerado`                        | `409` se já existe orçamento ativo (devolve o existente com `200`)                                              |
+| `POST /orcamentos/{numeroOS}/cobrar`                  | OS Service (`SERVICO`)                                              | `billing.cobrar`             | `201 { numeroOS, orderId, linkPagamento, valor }` ≙ `billing.cobranca-criada` (order no Mercado Pago) | `409 { motivo }` se o orçamento não está aprovado                                                               |
+| `DELETE /orcamentos/{numeroOS}` `{ motivo }`          | OS Service (`SERVICO`)                                              | `billing.cancelar-orcamento` | `200 { numeroOS, orcamentoId, estornado }` ≙ `billing.orcamento-cancelado`                            | — (idempotente)                                                                                                 |
+| `POST /orcamentos/{numeroOS}/aprovar`                 | Cliente (`CLIENTE`, via gateway)                                    | —                            | `200` + callback `billing.orcamento-aprovado`                                                         | —                                                                                                               |
+| `POST /orcamentos/{numeroOS}/rejeitar`                | Cliente (`CLIENTE`, via gateway)                                    | —                            | `200` + callback `billing.orcamento-rejeitado`                                                        | —                                                                                                               |
+| `POST /webhooks/mercadopago`                          | Mercado Pago (público; assinatura `x-signature` validada, ADR-0012) | —                            | `200` + callback `billing.pagamento-aprovado` / `billing.pagamento-recusado`                          | `401` (assinatura inválida ou `ts` a mais de 10 min): nada é gravado, só log e `oficina_billing_webhooks_total` |
 
 ### Callbacks que o Billing envia ao OS Service
 
@@ -44,7 +44,9 @@ Decisão de **03/11/2026** ([RFC-0008](https://github.com/guilhermeqmaia/soat-fi
 | `billing.pagamento-aprovado`  | webhook `order.processed` aprovado                        | `{ numeroOS, orderId, valor }`       |
 | `billing.pagamento-recusado`  | webhook recusado / cancelado                              | `{ numeroOS, orderId, motivo }`      |
 
-Cada callback leva um `id` estável. Se o OS não confirmar, o job de reconciliação reenvia o mesmo `id` a cada 2 min, e o OS deduplica.
+Cada callback leva um `id` estável. Se o OS não confirmar, o job de reconciliação reenvia o mesmo `id` a cada 2 min, e o OS deduplica. Recusa permanente do OS (`4xx` que não é `409`) conta: na 5ª o reenvio para e fica um log de erro (`callback recusado pelo OS no teto`) para intervenção manual; `5xx`, timeout e `409` seguem sendo reenviados.
+
+**Nova cobrança depois de uma recusa.** Uma order recusada continua pagável no checkout até expirar (`MP_ORDER_EXPIRACAO`). Por isso a reconciliação também consulta cobranças `RECUSADA` dentro dessa janela, e `cobrar` só emite outra order depois de consultar a anterior: se ela foi paga (webhook perdido), devolve a order paga e avisa `billing.pagamento-aprovado`; se ainda é pagável, cancela antes — sem cancelamento confirmado responde `5xx` e o OS repete, em vez de o cliente receber dois links pagáveis.
 
 Também há consultas para `CLIENTE` (só os próprios), `ATENDENTE` e `ADMIN`: `GET /orcamentos/{numeroOS}`, `GET /orcamentos?clienteId=` e `GET /pagamentos/{numeroOS}`. Swagger em `/api` fora de produção; contrato exportado em [`openapi.yaml`](openapi.yaml).
 
@@ -98,13 +100,14 @@ Interface em `http://localhost:3001/api` fora de produção; em produção ela �
 
 CD automático (`cd-aws.yml`): `homolog` → homologação, `main` → produção. Build → ECR → EKS (`k8s-aws/`) → migrations → smoke.
 
-| Secret/var do repo                      | Uso                                                               |
-| --------------------------------------- | ----------------------------------------------------------------- |
-| `AWS_ROLE_ARN` (secret)                 | OIDC da role `github-actions-oficina`                             |
-| `EKS_CLUSTER_NAME`, `AWS_REGION` (vars) | cluster alvo                                                      |
-| `DB_SECRET_ID` (var)                    | segredo do banco **próprio** no Secrets Manager (infra-db)        |
-| `JWT_SECRET_ID` (var)                   | segredo HS256 compartilhado com a Lambda                          |
-| `MP_SECRET_ID` (var)                    | JSON com `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`, `MP_PAYER_EMAIL` |
+| Secret/var do repo                      | Uso                                                                                                                                      |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `AWS_ROLE_ARN` (secret)                 | OIDC da role `github-actions-oficina`                                                                                                    |
+| `EKS_CLUSTER_NAME`, `AWS_REGION` (vars) | cluster alvo                                                                                                                             |
+| `DB_SECRET_ID` (var)                    | segredo do banco **próprio** no Secrets Manager (infra-db)                                                                               |
+| `JWT_SECRET_ID` (var)                   | segredo HS256 compartilhado com a Lambda                                                                                                 |
+| `MP_SECRET_ID` (var)                    | JSON com `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`, `MP_PAYER_EMAIL`                                                                        |
+| `MP_RETORNO_BASE_URL` (var, opcional)   | retorno do checkout (`<URL do API Gateway>/pagamento`, definida pelo `aws-deploy-all.sh` do infra-k8s); vazia = placeholder do ConfigMap |
 
 O Service expõe o **NodePort `30081`**, alvo do target group deste serviço no NLB interno único (ADR-0013). `OS_SERVICE_URL` é fixo no [`k8s/configmap.yaml`](k8s/configmap.yaml) (`http://oficina-app:3000`, DNS interno do cluster).
 

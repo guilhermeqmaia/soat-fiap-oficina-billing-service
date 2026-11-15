@@ -90,7 +90,7 @@ export class Cobranca {
       this.props.recusadaEm = agora;
       this.props.motivoRecusa = resultado.motivo;
     }
-    this.props.callback = { id: callbackId, ultimaTentativaEm: agora, entregueEm: null };
+    this.props.callback = { id: callbackId, ultimaTentativaEm: agora, entregueEm: null, falhas: 0 };
     return true;
   }
 

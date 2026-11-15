@@ -75,6 +75,8 @@ export class FakeBillingRepository implements BillingRepository {
   webhooks: RegistroWebhook[] = [];
   entreguesOrcamento: string[] = [];
   entreguesCobranca: string[] = [];
+  /** Recusas permanentes contadas por `callbackId`. */
+  falhasCallback = new Map<string, number>();
   /** Erros a lancar nas proximas chamadas de `persistir`. */
   falhas: Error[] = [];
   /** Executado antes de lancar a falha (simula o concorrente que venceu a corrida). */
@@ -132,6 +134,20 @@ export class FakeBillingRepository implements BillingRepository {
 
   async marcarCallbackCobrancaEntregue(id: string) {
     this.entreguesCobranca.push(id);
+  }
+
+  async registrarFalhaCallbackOrcamento(_id: string, callbackId: string) {
+    return this.contarFalha(callbackId);
+  }
+
+  async registrarFalhaCallbackCobranca(_id: string, callbackId: string) {
+    return this.contarFalha(callbackId);
+  }
+
+  private contarFalha(callbackId: string): number {
+    const falhas = (this.falhasCallback.get(callbackId) ?? 0) + 1;
+    this.falhasCallback.set(callbackId, falhas);
+    return falhas;
   }
 
   async reservarOrcamentosComCallback() {

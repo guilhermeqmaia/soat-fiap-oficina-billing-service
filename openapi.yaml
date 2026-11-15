@@ -50,6 +50,14 @@ paths:
           description: Token JWT ausente ou invalido
         '403': &ref_2
           description: Role sem acesso ou orcamento de outro cliente
+        '503':
+          description: >-
+            Corrida com outra requisicao; repita (Retry-After). Repeticao
+            idempotente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroTransitorioDto'
       security: &ref_3
         - bearer: []
       summary: Gera o orcamento (billing.gerar-orcamento) — role SERVICO
@@ -102,6 +110,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MotivoDto'
+        '503':
+          description: >-
+            Corrida com outra requisicao; repita (Retry-After). Repeticao
+            idempotente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroTransitorioDto'
       security: *ref_3
       summary: Cria a order no Mercado Pago (billing.cobrar) — role SERVICO
       tags: *ref_4
@@ -135,6 +151,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MotivoDto'
+        '503':
+          description: >-
+            Corrida com outra requisicao; repita (Retry-After). Repeticao
+            idempotente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroTransitorioDto'
       security: *ref_3
       summary: Cancela o orcamento, idempotente (compensacao) — role SERVICO
       tags: *ref_4
@@ -186,6 +210,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MotivoDto'
+        '503':
+          description: >-
+            Corrida com outra requisicao; repita (Retry-After). Repeticao
+            idempotente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroTransitorioDto'
       security: *ref_3
       summary: Cliente aprova; dispara o callback billing.orcamento-aprovado
       tags: *ref_4
@@ -221,6 +253,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MotivoDto'
+        '503':
+          description: >-
+            Corrida com outra requisicao; repita (Retry-After). Repeticao
+            idempotente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErroTransitorioDto'
       security: *ref_3
       summary: Cliente rejeita; dispara o callback billing.orcamento-rejeitado
       tags: *ref_4
@@ -294,7 +334,7 @@ paths:
         '400':
           description: Notificacao sem data.id valido
         '401':
-          description: Assinatura invalida
+          description: Assinatura invalida ou ts fora da janela (nada e gravado)
       summary: Notificacao de Order do Mercado Pago (publica, valida x-signature)
       tags:
         - Webhooks
@@ -377,6 +417,21 @@ components:
         - orcamentoId
         - total
         - validoAte
+    ErroTransitorioDto:
+      type: object
+      properties:
+        statusCode:
+          type: number
+          example: 503
+        message:
+          type: string
+        error:
+          type: string
+          example: Service Unavailable
+      required:
+        - statusCode
+        - message
+        - error
     CobrancaCriadaDto:
       type: object
       properties:

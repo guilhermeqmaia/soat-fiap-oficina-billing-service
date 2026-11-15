@@ -36,8 +36,17 @@ export interface BillingRepository {
   registrarWebhook(registro: RegistroWebhook): Promise<boolean>;
   marcarCallbackOrcamentoEntregue(id: string, callbackId: string, agora: Date): Promise<void>;
   marcarCallbackCobrancaEntregue(id: string, callbackId: string, agora: Date): Promise<void>;
+  /** Conta uma recusa permanente do OS para este `callbackId`; devolve o total. */
+  registrarFalhaCallbackOrcamento(id: string, callbackId: string): Promise<number>;
+  registrarFalhaCallbackCobranca(id: string, callbackId: string): Promise<number>;
   /** Reservas com lease por timestamp: varias replicas do job nao pegam o mesmo registro. */
   reservarOrcamentosComCallback(limite: Date, agora: Date, lote: number): Promise<Orcamento[]>;
   reservarCobrancasComCallback(limite: Date, agora: Date, lote: number): Promise<Cobranca[]>;
-  reservarCobrancasPendentes(limite: Date, agora: Date, lote: number): Promise<Cobranca[]>;
+  /** PENDENTE e RECUSADA criadas depois de `recusadasDesde` (a order ainda pode ser paga). */
+  reservarCobrancasPendentes(
+    limite: Date,
+    recusadasDesde: Date,
+    agora: Date,
+    lote: number,
+  ): Promise<Cobranca[]>;
 }

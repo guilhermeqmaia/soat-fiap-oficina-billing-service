@@ -2,11 +2,17 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { BILLING_REPOSITORY, BillingRepository } from '../../domain/billing.repository';
 import { Cobranca } from '../../domain/cobranca.entity';
 import { ConcorrenciaError } from '../../domain/errors';
-import { interpretarOrder } from '../../domain/resultado-order';
+import { interpretarOrder, SituacaoOrder } from '../../domain/resultado-order';
 import { StatusCobranca, TipoLancamento } from '../../domain/tipos';
 import { EntregaCallbacksService } from '../entrega-callbacks.service';
 import { GERADOR_ID, GeradorId } from '../ports/billing.config';
 import { MERCADO_PAGO_GATEWAY, MercadoPagoGateway } from '../ports/mercado-pago.gateway';
+
+function tipoDoLancamento(status: StatusCobranca): TipoLancamento {
+  if (status === StatusCobranca.APROVADA) return TipoLancamento.PAGAMENTO_APROVADO;
+  if (status === StatusCobranca.EXPIRADA) return TipoLancamento.COBRANCA_EXPIRADA;
+  return TipoLancamento.PAGAMENTO_RECUSADO;
+}
 
 /** Fonte de verdade e sempre `GET /v1/orders/{id}`, nunca o corpo do webhook. */
 @Injectable()
@@ -29,28 +35,32 @@ export class ProcessarOrderUseCase {
     await this.porCobranca(cobranca);
   }
 
-  async porCobranca(cobranca: Cobranca): Promise<void> {
+  /**
+   * Consulta a order e aplica o estado. Devolve a situacao consultada (`null` =
+   * cobranca sem order ou ja encerrada). `emSegundoPlano` nao segura quem chamou
+   * com a entrega do callback (o `cobrar` responde dentro do timeout do OS).
+   */
+  async porCobranca(cobranca: Cobranca, emSegundoPlano = false): Promise<SituacaoOrder | null> {
     const { orderId, status } = cobranca.dados;
     if (!orderId || (status !== StatusCobranca.PENDENTE && status !== StatusCobranca.RECUSADA)) {
-      return;
+      return null;
     }
     const situacao = await this.mercadoPago.consultarOrder(orderId);
     const agora = new Date();
-    if (!cobranca.aplicar(interpretarOrder(situacao), agora, this.ids.novo())) return;
+    if (!cobranca.aplicar(interpretarOrder(situacao), agora, this.ids.novo())) return situacao;
 
-    const tipo =
-      cobranca.dados.status === StatusCobranca.APROVADA
-        ? TipoLancamento.PAGAMENTO_APROVADO
-        : TipoLancamento.PAGAMENTO_RECUSADO;
     try {
       await this.repositorio.persistir({
         cobranca,
-        lancamentos: [cobranca.lancamento(tipo, agora)],
+        lancamentos: [cobranca.lancamento(tipoDoLancamento(cobranca.dados.status), agora)],
       });
     } catch (e) {
-      if (e instanceof ConcorrenciaError) return; // o webhook e o job correram; o outro ja aplicou
+      // o webhook e o job correram; o outro ja aplicou
+      if (e instanceof ConcorrenciaError) return situacao;
       throw e;
     }
-    await this.callbacks.entregarCobranca(cobranca);
+    const entrega = this.callbacks.entregarCobranca(cobranca);
+    if (!emSegundoPlano) await entrega;
+    return situacao;
   }
 }

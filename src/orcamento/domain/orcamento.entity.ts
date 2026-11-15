@@ -141,7 +141,7 @@ export class Orcamento {
 
   private registrarDecisao(agora: Date, callbackId: string): void {
     this.props.decididoEm = agora;
-    this.props.callback = { id: callbackId, ultimaTentativaEm: agora, entregueEm: null };
+    this.props.callback = { id: callbackId, ultimaTentativaEm: agora, entregueEm: null, falhas: 0 };
   }
 
   private exigirPendente(acao: string): void {

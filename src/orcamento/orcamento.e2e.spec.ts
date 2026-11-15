@@ -17,6 +17,7 @@ import { ServidorHttpFake } from '../test/servidor-http-fake';
 import { startTestDatabase, stopTestDatabase } from '../test/database.container';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReconciliarUseCase } from './application/use-cases/reconciliar.use-case';
+import { MAX_FALHAS_CALLBACK } from './domain/tipos';
 
 jest.setTimeout(120000);
 
@@ -251,13 +252,12 @@ describe('Billing (e2e com Postgres real)', () => {
     expect(logs).not.toContain(process.env.MP_PAYER_EMAIL as string);
   });
 
-  it('webhook com assinatura invalida: 401, auditado e sem consultar a order', async () => {
+  it('webhook com assinatura invalida ou ts antigo: 401, nada gravado nem consultado', async () => {
     await comOrder('ORD4E2E');
     await webhook('ORD4E2E', { 'x-signature': 'ts=1,v1=00', 'x-request-id': 'r-ruim' }).expect(401);
-    const auditoria = await prisma.webhookMercadoPago.findFirstOrThrow({
-      where: { orderId: 'ORD4E2E' },
-    });
-    expect(auditoria).toMatchObject({ assinaturaValida: false, payload: {} });
+    const antigo = cabecalhosWebhook('ORD4E2E', 'r-antigo', Date.now() - 11 * 60 * 1000);
+    await webhook('ORD4E2E', antigo).expect(401);
+    expect(await prisma.webhookMercadoPago.count({ where: { orderId: 'ORD4E2E' } })).toBe(0);
     expect(mp.chamadas.filter((c) => c.operacao === 'get')).toEqual([]);
   });
 
@@ -287,6 +287,8 @@ describe('Billing (e2e com Postgres real)', () => {
       data: { orderId: 'ORD6E2E', motivo: 'cc_rejected' },
     });
 
+    // Antes de emitir outra, confere que a antiga segue recusada e a cancela.
+    mp.consultando('ORD6E2E', { status: 'failed', status_detail: 'cc_rejected' });
     mp.cancelando('ORD6E2E');
     mp.criando('ORD7E2E');
     const nova = await cobrar().expect(201);
@@ -342,5 +344,101 @@ describe('Billing (e2e com Postgres real)', () => {
     await expect(prisma.lancamento.deleteMany({ where: { numeroOS: numero } })).rejects.toThrow(
       /append-only/,
     );
+  });
+
+  describe('cobranca recusada que ainda pode ser paga', () => {
+    const RECUSADA = { status: 'failed', status_detail: 'cc_rejected' };
+
+    /** Order criada, recusada pelo webhook e callback do recusado entregue. */
+    async function recusada(orderId: string) {
+      await comOrder(orderId);
+      mp.consultando(orderId, RECUSADA);
+      await webhook(orderId).expect(200);
+      await ate(async () => {
+        const row = await prisma.cobranca.findFirstOrThrow({ where: { orderId } });
+        return row.status === 'RECUSADA' && row.callbackEntregueEm !== null;
+      });
+      os.limpar();
+      mp.limpar();
+    }
+
+    it('paga depois da recusa com webhook perdido: a reconciliacao aprova', async () => {
+      await recusada('ORD9E2E');
+      mp.consultando('ORD9E2E', PAGO);
+      await app.get(ReconciliarUseCase).execute(DEPOIS_DA_JANELA());
+      const row = await prisma.cobranca.findFirstOrThrow({ where: { orderId: 'ORD9E2E' } });
+      expect(row.status).toBe('APROVADA');
+      expect(callbacks().map((c) => [c.numero, c.corpo.type])).toContainEqual([
+        numero,
+        'billing.pagamento-aprovado',
+      ]);
+    });
+
+    it('reprocesso apos pagamento com webhook perdido devolve a order paga, sem nova', async () => {
+      await recusada('ORD10E2E');
+      mp.consultando('ORD10E2E', PAGO);
+      const resposta = await cobrar().expect(201);
+      expect(resposta.body.orderId).toBe('ORD10E2E');
+      expect(mp.chamadas.map((c) => c.operacao)).toEqual(['get']);
+      expect(await prisma.cobranca.count({ where: { numeroOS: numero } })).toBe(1);
+      await ate(() => callbacks().some((c) => c.corpo.type === 'billing.pagamento-aprovado'));
+      expect(await tiposLedger()).toContain('PAGAMENTO_APROVADO');
+    });
+
+    it('sem cancelar a order antiga nao emite outra; a repeticao conclui', async () => {
+      await recusada('ORD11E2E');
+      mp.consultando('ORD11E2E', RECUSADA);
+      mp.falhando('cancel', 500, 'erro', 'ORD11E2E');
+      await cobrar().expect(500);
+      expect(mp.chamadas.some((c) => c.operacao === 'create')).toBe(false);
+      expect(await prisma.cobranca.count({ where: { numeroOS: numero } })).toBe(1);
+
+      mp.consultando('ORD11E2E', RECUSADA);
+      mp.cancelando('ORD11E2E');
+      mp.criando('ORD12E2E');
+      expect((await cobrar().expect(201)).body.orderId).toBe('ORD12E2E');
+    });
+
+    it('cobrar repetido em paralelo (timeout do OS) responde 201 com a mesma order', async () => {
+      await recusada('ORD13E2E');
+      for (let i = 0; i < 3; i++) {
+        mp.consultando('ORD13E2E', RECUSADA);
+        mp.cancelando('ORD13E2E');
+        mp.criando('ORD14E2E'); // a X-Idempotency-Key repetida devolve a mesma order
+      }
+      const respostas = await Promise.all([cobrar(), cobrar(), cobrar()]);
+      expect(respostas.map((r) => r.status)).toEqual([201, 201, 201]);
+      expect(new Set(respostas.map((r) => r.body.orderId))).toEqual(new Set(['ORD14E2E']));
+      expect(await prisma.cobranca.count({ where: { numeroOS: numero } })).toBe(2);
+    });
+  });
+
+  it('order expirada vai ao ledger como COBRANCA_EXPIRADA', async () => {
+    await comOrder('ORD15E2E');
+    mp.consultando('ORD15E2E', { status: 'expired' });
+    await webhook('ORD15E2E').expect(200);
+    await ate(async () => (await tiposLedger()).includes('COBRANCA_EXPIRADA'));
+    expect(await tiposLedger()).not.toContain('PAGAMENTO_RECUSADO');
+  });
+
+  it('callback recusado pelo OS (4xx) para de ser reenviado no teto', async () => {
+    await gerar().expect(201);
+    os.responder({ status: 404, body: { message: 'OS inexistente' } });
+    await aprovar().expect(200);
+    const doNumero = () => callbacks().filter((c) => c.numero === numero);
+    const falhas = async () =>
+      (await prisma.orcamento.findFirstOrThrow({ where: { numeroOS: numero } })).callbackFalhas;
+    await ate(async () => (await falhas()) === 1);
+
+    const HORA = 60 * 60 * 1000;
+    for (let i = 2; i <= MAX_FALHAS_CALLBACK; i++) {
+      os.responder({ status: 404 });
+      await app.get(ReconciliarUseCase).execute(new Date(Date.now() + i * HORA));
+      expect(await falhas()).toBe(i);
+    }
+    const enviados = doNumero().length;
+    await app.get(ReconciliarUseCase).execute(new Date(Date.now() + 99 * HORA));
+    expect(doNumero()).toHaveLength(enviados);
+    expect(enviados).toBe(MAX_FALHAS_CALLBACK);
   });
 });

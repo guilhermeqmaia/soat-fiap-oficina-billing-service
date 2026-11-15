@@ -7,6 +7,11 @@ export interface BillingConfig {
   readonly reentregaCallbackMs: number;
   /** Idade minima de uma cobranca PENDENTE para consultar o Mercado Pago (ADR-0012: 15 min). */
   readonly reconciliacaoMs: number;
+  /**
+   * Quanto tempo uma cobranca RECUSADA ainda e consultada: a order continua
+   * pagavel no checkout ate expirar (`MP_ORDER_EXPIRACAO`), mais uma folga.
+   */
+  readonly janelaPagamentoMs: number;
   readonly loteReconciliacao: number;
 }
 

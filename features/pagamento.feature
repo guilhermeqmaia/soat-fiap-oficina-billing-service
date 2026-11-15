@@ -31,6 +31,16 @@ Funcionalidade: Confirmacao do pagamento pelo Mercado Pago
     E a resposta traz uma nova order
     E a order anterior e cancelada no Mercado Pago
 
+  Cenario: Cliente paga a order recusada e o webhook se perde
+    Dado que o Mercado Pago informa a order como "failed" com detalhe "cc_rejected"
+    E que o webhook assinado ja chegou e o pagamento foi recusado
+    E que o cliente pagou depois a mesma order sem o webhook chegar
+    Quando o OS Service solicita a cobranca novamente
+    Entao a resposta tem status 201
+    E a resposta mantem a order ja paga
+    E existe uma unica cobranca para a OS
+    E a cobranca fica "APROVADA"
+
   Cenario: Pagamento pendente mantem a cobranca aberta
     Dado que o Mercado Pago informa a order como "action_required" com detalhe "waiting_payment"
     Quando o webhook assinado chega
@@ -41,6 +51,7 @@ Funcionalidade: Confirmacao do pagamento pelo Mercado Pago
   Cenario: Webhook com assinatura invalida e ignorado
     Quando um webhook com assinatura invalida chega
     Entao a resposta tem status 401
+    E nenhum webhook e gravado
     E nenhum callback de pagamento e enviado
     E a cobranca fica "PENDENTE"
 
