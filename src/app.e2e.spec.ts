@@ -41,6 +41,15 @@ describe('oficina-billing-service (e2e)', () => {
     expect(ready.body.checks.database.status).toBe('ok');
   });
 
+  it('GET /pagamento/{resultado} (retorno do checkout) e publico e devolve HTML', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/pagamento/sucesso?external_reference=OS-2026-0001&collection_status=approved')
+      .expect(200);
+    expect(res.headers['content-type']).toContain('text/html');
+    expect(res.text).toContain('Pagamento aprovado');
+    expect(res.text).toContain('OS-2026-0001');
+  });
+
   it('GET /metrics expoe o label service', async () => {
     const res = await request(app.getHttpServer()).get('/metrics').expect(200);
     expect(res.text).toContain('service="oficina-billing-service"');

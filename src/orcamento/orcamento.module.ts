@@ -25,6 +25,7 @@ import {
 } from './infrastructure/mercado-pago-sdk.gateway';
 import { OrcamentoController } from './infrastructure/orcamento.controller';
 import { PagamentoController } from './infrastructure/pagamento.controller';
+import { RetornoPagamentoController } from './infrastructure/retorno-pagamento.controller';
 import { PrismaBillingRepository } from './infrastructure/prisma-billing.repository';
 import { RECONCILIACAO_ATIVA, ReconciliacaoJob } from './infrastructure/reconciliacao.job';
 import { MP_WEBHOOK_SECRET, WebhookController } from './infrastructure/webhook.controller';
@@ -37,7 +38,12 @@ const FOLGA_JANELA_PAGAMENTO_MS = 60 * 60 * 1000;
 const MP_TIMEOUT_MS = 4000;
 
 @Module({
-  controllers: [OrcamentoController, PagamentoController, WebhookController],
+  controllers: [
+    OrcamentoController,
+    PagamentoController,
+    WebhookController,
+    RetornoPagamentoController,
+  ],
   providers: [
     GerarOrcamentoUseCase,
     CobrarOrcamentoUseCase,
