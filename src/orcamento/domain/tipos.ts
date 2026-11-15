@@ -31,6 +31,7 @@ export enum TipoLancamento {
   COBRANCA_CANCELADA = 'COBRANCA_CANCELADA',
   PAGAMENTO_APROVADO = 'PAGAMENTO_APROVADO',
   PAGAMENTO_RECUSADO = 'PAGAMENTO_RECUSADO',
+  COBRANCA_EXPIRADA = 'COBRANCA_EXPIRADA',
 }
 
 export interface ItemOrcamento {
@@ -56,7 +57,16 @@ export interface EstadoCallback {
   readonly id: string;
   readonly ultimaTentativaEm: Date;
   readonly entregueEm: Date | null;
+  /** Recusas permanentes (4xx que nao e 409) do OS para este `id`. */
+  readonly falhas: number;
 }
+
+/**
+ * Teto de recusas permanentes: repetir um `400`/`404` nao muda a resposta do OS.
+ * Atingido o teto, a reconciliacao para de reenviar e registra um erro. Falhas
+ * transitorias (5xx, timeout, `409`) nao contam e seguem sendo reenviadas.
+ */
+export const MAX_FALHAS_CALLBACK = 5;
 
 export interface EventoCallback {
   readonly id: string;

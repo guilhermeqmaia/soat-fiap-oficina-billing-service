@@ -41,6 +41,7 @@ enum TipoLancamento {
   COBRANCA_CANCELADA
   PAGAMENTO_APROVADO
   PAGAMENTO_RECUSADO
+  COBRANCA_EXPIRADA
 }
 
 model Orcamento {
@@ -60,6 +61,8 @@ model Orcamento {
   callbackId                String?   @map("callback_id") @db.Uuid
   callbackUltimaTentativaEm DateTime? @map("callback_ultima_tentativa_em") @db.Timestamptz(3)
   callbackEntregueEm        DateTime? @map("callback_entregue_em") @db.Timestamptz(3)
+  /// Recusas permanentes do OS para o callback_id atual (teto: MAX_FALHAS_CALLBACK).
+  callbackFalhas            Int       @default(0) @map("callback_falhas")
 
   criadoEm     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   atualizadoEm DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -109,6 +112,8 @@ model Cobranca {
   callbackId                String?   @map("callback_id") @db.Uuid
   callbackUltimaTentativaEm DateTime? @map("callback_ultima_tentativa_em") @db.Timestamptz(3)
   callbackEntregueEm        DateTime? @map("callback_entregue_em") @db.Timestamptz(3)
+  /// Recusas permanentes do OS para o callback_id atual (teto: MAX_FALHAS_CALLBACK).
+  callbackFalhas            Int       @default(0) @map("callback_falhas")
 
   criadoEm     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   atualizadoEm DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)

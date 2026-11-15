@@ -13,12 +13,12 @@ e a parte deste repositório das US-F4-13, 14, 15 e 18.
 
 ## Testes automatizados
 
-| Comando                    | O que valida                                                              |
-| -------------------------- | ------------------------------------------------------------------------- |
-| `npm run test:unit:cov`    | Domínio, casos de uso e adapters, com gate de 80%                         |
-| `npm run test:integration` | Fluxos HTTP com Postgres real; OS e Mercado Pago interceptados por `nock` |
-| `npm run test:bdd`         | Cenários Gherkin em `features/`; relatório em `reports/cucumber.html`     |
-| `npm run openapi:export`   | Gera o `openapi.yaml` publicado no hub                                    |
+| Comando                    | O que valida                                                                                            |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `npm run test:unit:cov`    | Domínio, casos de uso e adapters, com gate de 80%                                                       |
+| `npm run test:integration` | Fluxos HTTP com Postgres real; OS como servidor HTTP local e Mercado Pago como fake do SDK (sem `nock`) |
+| `npm run test:bdd`         | Cenários Gherkin em `features/`; relatório em `reports/cucumber.html`                                   |
+| `npm run openapi:export`   | Gera o `openapi.yaml` publicado no hub                                                                  |
 
 Os testes de contrato estão em `src/orcamento/contrato.e2e.spec.ts`: respostas contra o
 `openapi.yaml` versionado, e respostas e callbacks contra os schemas de `asyncapi.yaml`.
@@ -59,16 +59,23 @@ recusada em `resultado-order.ts` contra o `GET /v1/orders/{id}` real.
 
 ## Casos de borda
 
-| Caso                                | Onde está coberto                           |
-| ----------------------------------- | ------------------------------------------- |
-| Itens vazios, preço fora do formato | e2e, validação do DTO                       |
-| `POST /orcamentos` simultâneos      | e2e, índice único parcial                   |
-| Aprovar após `validoAte`            | unitário (`DecidirOrcamentoUseCase`)        |
-| `DELETE` sem orçamento existente    | e2e, responde `200` com `orcamentoId: null` |
-| Falha do Mercado Pago ao cobrar     | e2e, repete com a mesma `X-Idempotency-Key` |
-| OS fora do ar no callback           | e2e, reentrega com o mesmo `id`             |
-| Webhook e reconciliação em corrida  | unitário, versão otimista                   |
-| `UPDATE`/`DELETE` no ledger         | e2e, trigger no banco                       |
+| Caso                                                   | Onde está coberto                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| Itens vazios, preço fora do formato                    | e2e, validação do DTO                                                                |
+| `POST /orcamentos` simultâneos                         | e2e, índice único parcial                                                            |
+| Aprovar após `validoAte`                               | unitário (`DecidirOrcamentoUseCase`)                                                 |
+| `DELETE` sem orçamento existente                       | e2e, responde `200` com `orcamentoId: null`                                          |
+| Falha do Mercado Pago ao cobrar                        | e2e, repete com a mesma `X-Idempotency-Key`                                          |
+| OS fora do ar no callback                              | e2e, reentrega com o mesmo `id`                                                      |
+| Webhook e reconciliação em corrida                     | unitário, versão otimista                                                            |
+| `UPDATE`/`DELETE` no ledger                            | e2e, trigger no banco                                                                |
+| Recusada e paga depois, webhook perdido                | e2e e `pagamento.feature`: reconciliação e `cobrar` aprovam a order antiga, sem nova |
+| Falha ao cancelar a order recusada                     | e2e e unitário: `cobrar` responde 5xx e não cria outra order                         |
+| `cobrar` repetido em paralelo (timeout do OS)          | e2e: todas `201` com a mesma order, nunca `409`                                      |
+| Corrida de versão que persiste                         | unitário: `503` com `Retry-After` (`ConflitoTransitorioFilter`)                      |
+| OS recusa o callback com `4xx`                         | e2e e unitário: conta até 5, para de reenviar e loga erro                            |
+| Webhook com `ts` fora de 10 min ou assinatura inválida | e2e e unitário: `401`, nada gravado, só métrica                                      |
+| Order expirada                                         | e2e e unitário: ledger `COBRANCA_EXPIRADA`                                           |
 
 ## Rastreabilidade
 

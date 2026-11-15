@@ -8,12 +8,12 @@ export interface ReceberWebhookInput {
   tipo: string | null;
   action: string | null;
   payload: unknown;
-  assinaturaValida: boolean;
 }
 
 /**
- * Registra a notificacao e responde sem esperar o processamento (limite de 22 s
- * do Mercado Pago). Se o processamento falhar, a reconciliacao fecha a cobranca.
+ * Registra a notificacao (ja autenticada pelo `x-signature`) e responde sem
+ * esperar o processamento (limite de 22 s do Mercado Pago). Se o processamento
+ * falhar, a reconciliacao fecha a cobranca.
  */
 @Injectable()
 export class ReceberWebhookUseCase {
@@ -29,14 +29,11 @@ export class ReceberWebhookUseCase {
       orderId: input.orderId,
       xRequestId: input.xRequestId,
       action: input.action,
-      // Corpo nao autenticado nao e guardado: a rota e publica.
-      payload: input.assinaturaValida ? input.payload : {},
-      assinaturaValida: input.assinaturaValida,
+      payload: input.payload,
+      assinaturaValida: true,
       recebidoEm: new Date(),
     });
-    if (input.assinaturaValida && input.tipo === 'order') {
-      void this.processar(input.orderId);
-    }
+    if (input.tipo === 'order') void this.processar(input.orderId);
   }
 
   private async processar(orderId: string): Promise<void> {

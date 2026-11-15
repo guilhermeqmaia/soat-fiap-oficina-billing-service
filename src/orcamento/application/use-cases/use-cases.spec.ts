@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { NotOwnedByUserError } from '@guilhermeqmaia/oficina-kit/core';
 import {
   ATENDENTE,
@@ -13,12 +14,20 @@ import {
   ClienteIdObrigatorioError,
   CobrancaNaoEncontradaError,
   ConcorrenciaError,
+  ConflitoTransitorioError,
   OrcamentoConflitoError,
   OrcamentoNaoEncontradoError,
   RegistroDuplicadoError,
 } from '../../domain/errors';
-import { StatusCobranca, StatusOrcamento, TipoItem, TipoLancamento } from '../../domain/tipos';
+import {
+  MAX_FALHAS_CALLBACK,
+  StatusCobranca,
+  StatusOrcamento,
+  TipoItem,
+  TipoLancamento,
+} from '../../domain/tipos';
 import { EntregaCallbacksService } from '../entrega-callbacks.service';
+import { CallbackRecusadoError } from '../ports/callback-os.gateway';
 import { MercadoPagoGateway } from '../ports/mercado-pago.gateway';
 import { BillingConfig } from '../ports/billing.config';
 import { CancelarOrcamentoUseCase } from './cancelar-orcamento.use-case';
@@ -34,6 +43,7 @@ const CONFIG: BillingConfig = {
   validadeOrcamentoMs: 1000,
   reentregaCallbackMs: 100,
   reconciliacaoMs: 200,
+  janelaPagamentoMs: 1000,
   loteReconciliacao: 10,
 };
 
@@ -157,6 +167,36 @@ describe('DecidirOrcamentoUseCase', () => {
     expect(repo.persistir).not.toHaveBeenCalled();
   });
 
+  it('corrida com a mesma decisao: rele e responde como idempotente', async () => {
+    repo.orcamentos.push(novoOrcamento());
+    repo.falhas.push(new ConcorrenciaError('Orcamento'));
+    repo.aoFalhar = () => (repo.orcamentos = [orcamentoAprovado()]);
+    const saida = await useCase().execute(aprovar);
+    await aguardar();
+    expect(saida.status).toBe(StatusOrcamento.APROVADO);
+    expect(enviar).not.toHaveBeenCalled(); // quem gravou primeiro entrega o callback
+    expect(repo.lancamentos).toHaveLength(0);
+  });
+
+  it('corrida com a decisao oposta: 409 de negocio', async () => {
+    repo.orcamentos.push(novoOrcamento());
+    repo.falhas.push(new ConcorrenciaError('Orcamento'));
+    repo.aoFalhar = () => {
+      const rejeitado = novoOrcamento();
+      rejeitado.rejeitar(new Date(), 'cb-r', 'caro');
+      repo.orcamentos = [rejeitado];
+    };
+    await expect(useCase().execute(aprovar)).rejects.toThrow(OrcamentoConflitoError);
+  });
+
+  it('conflito que persiste sobe como transitorio depois de 3 leituras', async () => {
+    repo.orcamentos.push(novoOrcamento());
+    repo.falhas.push(...[1, 2, 3].map(() => new ConcorrenciaError('Orcamento')));
+    repo.aoFalhar = () => (repo.orcamentos = [novoOrcamento()]);
+    await expect(useCase().execute(aprovar)).rejects.toThrow(ConflitoTransitorioError);
+    expect(repo.persistir).toHaveBeenCalledTimes(3);
+  });
+
   it('vencido expira e recusa a decisao', async () => {
     const vencido = novoOrcamento({ validoAte: new Date(Date.now() - 1) });
     repo.orcamentos.push(vencido);
@@ -168,8 +208,18 @@ describe('DecidirOrcamentoUseCase', () => {
 });
 
 describe('CobrarOrcamentoUseCase', () => {
-  const useCase = () => new CobrarOrcamentoUseCase(repo, mp, ids);
+  const useCase = () =>
+    new CobrarOrcamentoUseCase(repo, mp, ids, new ProcessarOrderUseCase(repo, mp, ids, callbacks));
   const entrada = { numeroOS: 'OS-1' };
+  const RECUSADA_NO_MP = { status: 'failed', statusDetail: 'cc_rejected', pagamentos: [] };
+
+  function comRecusada(orderId: string | null = 'ORD-ANTIGA') {
+    repo.orcamentos.push(orcamentoAprovado());
+    const recusada = orderId ? cobrancaComOrder(1, orderId) : novaCobranca();
+    recusada.aplicar({ tipo: 'RECUSADA', motivo: 'x' }, new Date(), 'cb');
+    repo.cobrancas.push(recusada);
+    return recusada;
+  }
 
   it('404 sem orcamento e 409 se nao aprovado', async () => {
     await expect(useCase().execute(entrada)).rejects.toThrow(OrcamentoNaoEncontradoError);
@@ -215,32 +265,116 @@ describe('CobrarOrcamentoUseCase', () => {
     expect(repo.cobrancas).toHaveLength(1);
   });
 
-  it('apos recusa cria nova tentativa e cancela a order antiga', async () => {
-    repo.orcamentos.push(orcamentoAprovado());
-    const recusada = cobrancaComOrder(1, 'ORD-ANTIGA');
-    recusada.aplicar({ tipo: 'RECUSADA', motivo: 'x' }, new Date(), 'cb');
-    repo.cobrancas.push(recusada);
+  it('apos recusa consulta a order antiga, cancela e cria nova tentativa', async () => {
+    comRecusada();
+    mp.consultarOrder.mockResolvedValue(RECUSADA_NO_MP);
     await useCase().execute(entrada);
+    expect(mp.consultarOrder).toHaveBeenCalledWith('ORD-ANTIGA');
     expect(mp.cancelarOrder).toHaveBeenCalledWith('ORD-ANTIGA');
+    expect(mp.cancelarOrder.mock.invocationCallOrder[0]).toBeLessThan(
+      mp.criarOrder.mock.invocationCallOrder[0],
+    );
     expect(mp.criarOrder.mock.calls[0][0].idempotencyKey).toBe('cobranca:OS-1:2');
   });
 
-  it('falha ao cancelar a order antiga nao impede a nova', async () => {
-    repo.orcamentos.push(orcamentoAprovado());
-    const recusada = cobrancaComOrder(1, 'ORD-ANTIGA');
-    recusada.aplicar({ tipo: 'RECUSADA', motivo: 'x' }, new Date(), 'cb');
-    repo.cobrancas.push(recusada);
-    mp.cancelarOrder.mockRejectedValueOnce(new Error('ja expirada'));
-    await expect(useCase().execute(entrada)).resolves.toMatchObject({ orderId: 'ORD1' });
+  it('recusada e paga depois (webhook perdido): aprova a antiga, sem nova order', async () => {
+    const recusada = comRecusada();
+    mp.consultarOrder.mockResolvedValue({
+      status: 'processed',
+      statusDetail: 'accredited',
+      pagamentos: [],
+    });
+    const saida = await useCase().execute(entrada);
+    await aguardar();
+    expect(saida).toMatchObject({ orderId: 'ORD-ANTIGA' });
+    expect(recusada.dados.status).toBe(StatusCobranca.APROVADA);
+    expect(tipos()).toEqual([TipoLancamento.PAGAMENTO_APROVADO]);
+    expect(enviar.mock.calls[0][0].type).toBe('billing.pagamento-aprovado');
+    expect(mp.cancelarOrder).not.toHaveBeenCalled();
+    expect(mp.criarOrder).not.toHaveBeenCalled();
   });
 
-  it('recusa sem order nao tenta cancelar', async () => {
-    repo.orcamentos.push(orcamentoAprovado());
-    const recusada = novaCobranca();
-    recusada.aplicar({ tipo: 'RECUSADA', motivo: 'x' }, new Date(), 'cb');
-    repo.cobrancas.push(recusada);
-    await useCase().execute(entrada);
+  it('falha ao cancelar a order antiga impede a nova (o OS repete)', async () => {
+    comRecusada();
+    mp.consultarOrder.mockResolvedValue(RECUSADA_NO_MP);
+    mp.cancelarOrder.mockRejectedValueOnce(new Error('MP fora'));
+    await expect(useCase().execute(entrada)).rejects.toThrow('MP fora');
+    expect(mp.criarOrder).not.toHaveBeenCalled();
+    expect(repo.cobrancas).toHaveLength(1);
+  });
+
+  it('falha ao consultar a order antiga impede a nova', async () => {
+    comRecusada();
+    mp.consultarOrder.mockRejectedValue(new Error('MP fora'));
+    await expect(useCase().execute(entrada)).rejects.toThrow('MP fora');
+    expect(mp.criarOrder).not.toHaveBeenCalled();
+  });
+
+  it.each(['canceled', 'expired'])(
+    'order antiga ja %s no MP nao e cancelada de novo',
+    async (st) => {
+      comRecusada();
+      mp.consultarOrder.mockResolvedValue({ status: st, pagamentos: [] });
+      await expect(useCase().execute(entrada)).resolves.toMatchObject({ orderId: 'ORD1' });
+      expect(mp.cancelarOrder).not.toHaveBeenCalled();
+    },
+  );
+
+  it('order antiga processada sem confirmacao: conflito transitorio, sem nova order', async () => {
+    comRecusada();
+    mp.consultarOrder.mockResolvedValue({
+      status: 'processed',
+      statusDetail: 'in_review',
+      pagamentos: [],
+    });
+    await expect(useCase().execute(entrada)).rejects.toThrow(ConflitoTransitorioError);
     expect(mp.cancelarOrder).not.toHaveBeenCalled();
+    expect(mp.criarOrder).not.toHaveBeenCalled();
+  });
+
+  it('recusa sem order nao consulta nem cancela', async () => {
+    comRecusada(null);
+    await useCase().execute(entrada);
+    expect(mp.consultarOrder).not.toHaveBeenCalled();
+    expect(mp.cancelarOrder).not.toHaveBeenCalled();
+  });
+
+  it('anterior expirada nao e consultada: ninguem paga mais por ela', async () => {
+    repo.orcamentos.push(orcamentoAprovado());
+    const expirada = cobrancaComOrder(1, 'ORD-ANTIGA');
+    expirada.aplicar({ tipo: 'EXPIRADA', motivo: 'x' }, new Date(), 'cb');
+    repo.cobrancas.push(expirada);
+    await useCase().execute(entrada);
+    expect(mp.consultarOrder).not.toHaveBeenCalled();
+    expect(mp.cancelarOrder).not.toHaveBeenCalled();
+    expect(mp.criarOrder.mock.calls[0][0].idempotencyKey).toBe('cobranca:OS-1:2');
+  });
+
+  it('anterior cancelada: reforca o cancelamento sem bloquear a nova', async () => {
+    repo.orcamentos.push(orcamentoAprovado());
+    const cancelada = cobrancaComOrder(1, 'ORD-ANTIGA');
+    cancelada.cancelar();
+    repo.cobrancas.push(cancelada);
+    mp.cancelarOrder.mockRejectedValueOnce(new Error('ja cancelada'));
+    await expect(useCase().execute(entrada)).resolves.toMatchObject({ orderId: 'ORD1' });
+    expect(mp.cancelarOrder).toHaveBeenCalledWith('ORD-ANTIGA');
+  });
+
+  it('corrida na gravacao final: devolve a order da outra requisicao', async () => {
+    repo.orcamentos.push(orcamentoAprovado());
+    repo.cobrancas.push(novaCobranca()); // reservada por uma chamada anterior que caiu
+    repo.falhas.push(new ConcorrenciaError('Cobranca'));
+    repo.aoFalhar = () => (repo.cobrancas = [cobrancaComOrder(1, 'ORD-OUTRA')]);
+    mp.criarOrder.mockResolvedValue({ orderId: 'ORD-OUTRA', linkPagamento: 'x' });
+    await expect(useCase().execute(entrada)).resolves.toMatchObject({ orderId: 'ORD-OUTRA' });
+  });
+
+  it('corrida sem order vigente sobe como conflito transitorio (503)', async () => {
+    repo.orcamentos.push(orcamentoAprovado());
+    repo.cobrancas.push(novaCobranca());
+    repo.falhas.push(new ConcorrenciaError('Cobranca'));
+    repo.aoFalhar = () => (repo.cobrancas = [novaCobranca()]);
+    await expect(useCase().execute(entrada)).rejects.toThrow(ConcorrenciaError);
   });
 
   it('na corrida reaproveita a cobranca do concorrente', async () => {
@@ -381,6 +515,23 @@ describe('ProcessarOrderUseCase', () => {
     expect(repo.entreguesCobranca).toEqual(['cob-1']);
   });
 
+  it('expirada grava COBRANCA_EXPIRADA (e avisa o OS como recusa)', async () => {
+    repo.cobrancas.push(cobrancaComOrder());
+    mp.consultarOrder.mockResolvedValue({ status: 'expired', pagamentos: [] });
+    await useCase().porOrderId('ORD1');
+    expect(tipos()).toEqual([TipoLancamento.COBRANCA_EXPIRADA]);
+    expect(enviar.mock.calls[0][0].type).toBe('billing.pagamento-recusado');
+  });
+
+  it('em segundo plano devolve a situacao sem esperar o callback', async () => {
+    const cobranca = cobrancaComOrder();
+    repo.cobrancas.push(cobranca);
+    mp.consultarOrder.mockResolvedValue(pago);
+    enviar.mockReturnValue(new Promise(() => undefined));
+    await expect(useCase().porCobranca(cobranca, true)).resolves.toEqual(pago);
+    expect(enviar).toHaveBeenCalled();
+  });
+
   it('recusada grava PAGAMENTO_RECUSADO', async () => {
     repo.cobrancas.push(cobrancaComOrder());
     mp.consultarOrder.mockResolvedValue({ status: 'failed', pagamentos: [] });
@@ -440,7 +591,6 @@ describe('ReceberWebhookUseCase', () => {
     tipo: 'order',
     action: 'order.processed',
     payload: { a: 1 },
-    assinaturaValida: true,
   };
 
   beforeEach(() => {
@@ -451,12 +601,6 @@ describe('ReceberWebhookUseCase', () => {
     await useCase().execute(entrada);
     expect(repo.webhooks[0]).toMatchObject({ payload: { a: 1 }, assinaturaValida: true });
     expect(porOrderId).toHaveBeenCalledWith('ORD1');
-  });
-
-  it('assinatura invalida: audita sem guardar o corpo nem processar', async () => {
-    await useCase().execute({ ...entrada, assinaturaValida: false });
-    expect(repo.webhooks[0]).toMatchObject({ payload: {}, assinaturaValida: false });
-    expect(porOrderId).not.toHaveBeenCalled();
   });
 
   it('notificacao de outro tipo nao processa', async () => {
@@ -497,7 +641,12 @@ describe('ReconciliarUseCase', () => {
 
     expect(enviar.mock.calls.map((c) => c[0].id)).toEqual(['cb-aprovado', 'cb-paga']);
     expect(porCobranca).toHaveBeenCalledWith(pendente);
-    expect(reservar).toHaveBeenCalledWith(new Date(AGORA.getTime() - 200), AGORA, 10);
+    expect(reservar).toHaveBeenCalledWith(
+      new Date(AGORA.getTime() - 200),
+      new Date(AGORA.getTime() - 1000), // RECUSADA ainda pagavel: janela da order
+      AGORA,
+      10,
+    );
   });
 
   it('uma falha nao interrompe o lote', async () => {
@@ -518,5 +667,25 @@ describe('EntregaCallbacksService', () => {
     enviar.mockRejectedValue(new Error('OS fora'));
     await expect(callbacks.entregarOrcamento(orcamentoAprovado())).resolves.toBeUndefined();
     expect(repo.entreguesOrcamento).toEqual([]);
+    expect(repo.falhasCallback.size).toBe(0); // transitoria nao conta para o teto
+  });
+
+  it('recusa permanente do OS conta por callback e loga erro no teto', async () => {
+    const erro = jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    enviar.mockRejectedValue(new CallbackRecusadoError(404, 'OS inexistente'));
+    const paga = cobrancaComOrder();
+    paga.aplicar({ tipo: 'APROVADA' }, new Date(), 'cb-paga');
+    for (let i = 0; i < MAX_FALHAS_CALLBACK; i++) await callbacks.entregarCobranca(paga);
+    expect(repo.falhasCallback.get('cb-paga')).toBe(MAX_FALHAS_CALLBACK);
+    expect(erro).toHaveBeenCalledTimes(1);
+    expect(erro.mock.calls[0][0]).toMatchObject({ status: 404, falhas: MAX_FALHAS_CALLBACK });
+    expect(repo.entreguesCobranca).toEqual([]);
+    erro.mockRestore();
+  });
+
+  it('falha ao contar a recusa nao rejeita', async () => {
+    enviar.mockRejectedValue(new CallbackRecusadoError(400, 'envelope invalido'));
+    jest.spyOn(repo, 'registrarFalhaCallbackOrcamento').mockRejectedValue(new Error('banco'));
+    await expect(callbacks.entregarOrcamento(orcamentoAprovado())).resolves.toBeUndefined();
   });
 });

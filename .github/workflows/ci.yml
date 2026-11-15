@@ -74,7 +74,7 @@ jobs:
       - run: npm ci && npx prisma generate && npm run test:all:cov
       - name: Analise
         if: ${{ env.SONAR_TOKEN != '' }}
-        uses: SonarSource/sonarqube-scan-action@v5
+        uses: SonarSource/sonarqube-scan-action@v6
         env: { SONAR_TOKEN: '${{ secrets.SONAR_TOKEN }}' }
       - name: Sem SONAR_TOKEN
         if: ${{ env.SONAR_TOKEN == '' }}

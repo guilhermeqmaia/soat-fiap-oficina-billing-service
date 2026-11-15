@@ -8,7 +8,7 @@ import { Cobranca } from './cobranca.entity';
 import { Dinheiro } from './dinheiro.vo';
 import { Orcamento } from './orcamento.entity';
 import { OrcamentoConflitoError, ValorMonetarioInvalidoError } from './errors';
-import { interpretarOrder } from './resultado-order';
+import { estadoOrderAnterior, interpretarOrder } from './resultado-order';
 import { StatusCobranca, StatusOrcamento, TipoLancamento } from './tipos';
 
 const AGORA = new Date('2026-11-09T12:00:00Z');
@@ -100,7 +100,7 @@ describe('Orcamento', () => {
     expect(cancelado.eventoPendente()).toBeNull();
 
     const props = { ...orcamentoAprovado().dados };
-    props.callback = { id: 'cb', ultimaTentativaEm: AGORA, entregueEm: AGORA };
+    props.callback = { id: 'cb', ultimaTentativaEm: AGORA, entregueEm: AGORA, falhas: 0 };
     const entregue = Orcamento.reconstituir(props);
     expect(entregue.eventoPendente()).toBeNull();
   });
@@ -196,7 +196,7 @@ describe('Cobranca', () => {
     paga.aplicar({ tipo: 'APROVADA' }, AGORA, 'cb');
     const entregue = Cobranca.reconstituir({
       ...paga.dados,
-      callback: { id: 'cb', ultimaTentativaEm: AGORA, entregueEm: AGORA },
+      callback: { id: 'cb', ultimaTentativaEm: AGORA, entregueEm: AGORA, falhas: 0 },
     });
     expect(entregue.eventoPendente()).toBeNull();
     const semData = Cobranca.reconstituir({ ...paga.dados, pagoEm: null });
@@ -258,5 +258,19 @@ describe('interpretarOrder', () => {
     [{ pagamentos }, { tipo: 'PENDENTE' }],
   ])('%j -> %j', (situacao, esperado) => {
     expect(interpretarOrder(situacao)).toEqual(esperado);
+  });
+});
+
+describe('estadoOrderAnterior', () => {
+  it.each([
+    ['canceled', 'ENCERRADA'],
+    ['cancelled', 'ENCERRADA'],
+    ['expired', 'ENCERRADA'],
+    ['processed', 'PROCESSADA'],
+    ['failed', 'PAGAVEL'],
+    ['action_required', 'PAGAVEL'],
+    [undefined, 'PAGAVEL'],
+  ])('%s -> %s', (status, esperado) => {
+    expect(estadoOrderAnterior({ status, pagamentos: [] })).toBe(esperado);
   });
 });

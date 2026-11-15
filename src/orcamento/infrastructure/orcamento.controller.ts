@@ -20,6 +20,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiQuery,
+  ApiServiceUnavailableResponse,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -34,19 +35,28 @@ import {
   CancelarOrcamentoDto,
   CobrancaCriadaDto,
   CriarOrcamentoDto,
+  ErroTransitorioDto,
   MotivoDto,
   OrcamentoCanceladoDto,
   OrcamentoDto,
   OrcamentoGeradoDto,
   RejeitarOrcamentoDto,
 } from './dto/orcamento.dto';
+import { ConflitoTransitorioFilter } from './conflito-transitorio.filter';
 import { OrcamentoConflitoFilter } from './orcamento-conflito.filter';
+
+/** Conflito transitorio (corrida): o OS repete 5xx; a repeticao e idempotente. */
+const ConflitoTransitorio = () =>
+  ApiServiceUnavailableResponse({
+    type: ErroTransitorioDto,
+    description: 'Corrida com outra requisicao; repita (Retry-After). Repeticao idempotente.',
+  });
 
 @ApiTags('Orcamentos')
 @ApiBearerAuth()
 @ApiUnauthorizedResponse({ description: 'Token JWT ausente ou invalido' })
 @ApiForbiddenResponse({ description: 'Role sem acesso ou orcamento de outro cliente' })
-@UseFilters(OrcamentoConflitoFilter)
+@UseFilters(OrcamentoConflitoFilter, ConflitoTransitorioFilter)
 @Controller('orcamentos')
 export class OrcamentoController {
   constructor(
@@ -60,6 +70,7 @@ export class OrcamentoController {
   @Post()
   @Roles(Role.SERVICO)
   @ApiOperation({ summary: 'Gera o orcamento (billing.gerar-orcamento) — role SERVICO' })
+  @ConflitoTransitorio()
   @ApiCreatedResponse({ type: OrcamentoGeradoDto, description: 'billing.orcamento-gerado' })
   @ApiOkResponse({ type: OrcamentoGeradoDto, description: 'Orcamento ativo ja existente' })
   async criar(@Body() dto: CriarOrcamentoDto, @Res({ passthrough: true }) res: Response) {
@@ -71,6 +82,7 @@ export class OrcamentoController {
   @Post(':numeroOS/cobrar')
   @Roles(Role.SERVICO)
   @ApiOperation({ summary: 'Cria a order no Mercado Pago (billing.cobrar) — role SERVICO' })
+  @ConflitoTransitorio()
   @ApiCreatedResponse({ type: CobrancaCriadaDto, description: 'billing.cobranca-criada' })
   @ApiNotFoundResponse({ description: 'Orcamento inexistente' })
   @ApiConflictResponse({ type: MotivoDto, description: 'Orcamento nao aprovado' })
@@ -81,6 +93,7 @@ export class OrcamentoController {
   @Delete(':numeroOS')
   @Roles(Role.SERVICO)
   @ApiOperation({ summary: 'Cancela o orcamento, idempotente (compensacao) — role SERVICO' })
+  @ConflitoTransitorio()
   @ApiOkResponse({ type: OrcamentoCanceladoDto, description: 'billing.orcamento-cancelado' })
   @ApiConflictResponse({ type: MotivoDto, description: 'Pagamento ja aprovado' })
   cancelar(@Param('numeroOS') numeroOS: string, @Body() dto: CancelarOrcamentoDto) {
@@ -91,6 +104,7 @@ export class OrcamentoController {
   @Roles(Role.CLIENTE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Cliente aprova; dispara o callback billing.orcamento-aprovado' })
+  @ConflitoTransitorio()
   @ApiOkResponse({ type: OrcamentoDto })
   @ApiNotFoundResponse({ description: 'Orcamento inexistente' })
   @ApiConflictResponse({ type: MotivoDto, description: 'Orcamento ja decidido ou expirado' })
@@ -102,6 +116,7 @@ export class OrcamentoController {
   @Roles(Role.CLIENTE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Cliente rejeita; dispara o callback billing.orcamento-rejeitado' })
+  @ConflitoTransitorio()
   @ApiOkResponse({ type: OrcamentoDto })
   @ApiNotFoundResponse({ description: 'Orcamento inexistente' })
   @ApiConflictResponse({ type: MotivoDto, description: 'Orcamento ja decidido ou expirado' })

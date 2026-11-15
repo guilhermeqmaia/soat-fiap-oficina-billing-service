@@ -1,23 +1,23 @@
 import { INestApplication } from '@nestjs/common';
-import nock from 'nock';
 import request from 'supertest';
 import {
+  AppDeTeste,
   ate,
-  CallbackRecebido,
+  callbacksRecebidos,
   cabecalhosWebhook,
   corpoOrcamento,
-  mpCancelandoOrder,
-  mpConsultandoOrder,
-  mpCriandoOrder,
-  osRecebendoCallbacks,
+  pararApp,
   subirApp,
   tokenAtendente,
   tokenCliente,
   tokenServico,
 } from '../test/app-harness';
+import { MercadoPagoFake } from '../test/mercado-pago-fake';
+import { ServidorHttpFake } from '../test/servidor-http-fake';
 import { startTestDatabase, stopTestDatabase } from '../test/database.container';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReconciliarUseCase } from './application/use-cases/reconciliar.use-case';
+import { MAX_FALHAS_CALLBACK } from './domain/tipos';
 
 jest.setTimeout(120000);
 
@@ -25,13 +25,16 @@ const PAGO = { status: 'processed', status_detail: 'accredited' };
 const DEPOIS_DA_JANELA = () => new Date(Date.now() + 60 * 60 * 1000);
 
 describe('Billing (e2e com Postgres real)', () => {
+  let teste: AppDeTeste;
   let app: INestApplication;
+  let os: ServidorHttpFake;
+  let mp: MercadoPagoFake;
   let prisma: PrismaService;
-  let callbacks: CallbackRecebido[];
   let seq = 0;
   let numero: string;
 
   const http = () => request(app.getHttpServer());
+  const callbacks = () => callbacksRecebidos(os);
   const gerar = () =>
     http().post('/orcamentos').set('Authorization', tokenServico()).send(corpoOrcamento(numero));
   const aprovar = () =>
@@ -53,50 +56,47 @@ describe('Billing (e2e com Postgres real)', () => {
 
   async function aprovado() {
     await gerar().expect(201);
-    osRecebendoCallbacks(callbacks);
     await aprovar().expect(200);
-    await ate(() => callbacks.length === 1);
+    await ate(() => callbacks().length === 1);
     await ate(async () => {
       const row = await prisma.orcamento.findFirstOrThrow({ where: { numeroOS: numero } });
       return row.callbackEntregueEm !== null;
     });
-    callbacks.length = 0;
+    os.limpar();
   }
 
   async function comOrder(orderId: string) {
     await aprovado();
-    mpCriandoOrder(orderId);
+    mp.criando(orderId);
     await cobrar().expect(201);
   }
 
   beforeAll(async () => {
     process.env.DATABASE_URL = await startTestDatabase();
-    app = await subirApp();
+    teste = await subirApp();
+    ({ app, os, mp } = teste);
     prisma = app.get(PrismaService);
   });
 
   afterAll(async () => {
-    nock.restore();
-    await app.close();
+    await pararApp(teste);
     await stopTestDatabase();
   });
 
   beforeEach(() => {
-    nock.cleanAll();
-    callbacks = [];
+    os.limpar();
+    mp.limpar();
     numero = `OS-E2E-${++seq}`;
   });
 
   it('caminho feliz: orcamento, aprovacao, cobranca, webhook e callback', async () => {
-    const corpoMp: unknown[] = [];
     const gerado = await gerar().expect(201);
     expect(gerado.body).toMatchObject({ numeroOS: numero, total: '300.00' });
 
-    osRecebendoCallbacks(callbacks);
     const decisao = await aprovar().expect(200);
     expect(decisao.body.status).toBe('APROVADO');
-    await ate(() => callbacks.length === 1);
-    expect(callbacks[0]).toMatchObject({
+    await ate(() => callbacks().length === 1);
+    expect(callbacks()[0]).toMatchObject({
       numero,
       corpo: {
         type: 'billing.orcamento-aprovado',
@@ -105,9 +105,9 @@ describe('Billing (e2e com Postgres real)', () => {
         data: { numeroOS: numero, orcamentoId: gerado.body.orcamentoId },
       },
     });
-    expect(callbacks[0].autorizacao).toMatch(/^Bearer /);
+    expect(callbacks()[0].autorizacao).toMatch(/^Bearer /);
 
-    mpCriandoOrder('ORD1E2E', corpoMp);
+    mp.criando('ORD1E2E');
     const cobranca = await cobrar().expect(201);
     expect(cobranca.body).toEqual({
       numeroOS: numero,
@@ -115,17 +115,16 @@ describe('Billing (e2e com Postgres real)', () => {
       linkPagamento: 'https://mp.test/ORD1E2E',
       valor: '300.00',
     });
-    expect(corpoMp[0]).toMatchObject({
+    expect(mp.chamadas[0].body).toMatchObject({
       external_reference: numero,
       total_amount: '300.00',
       processing_mode: 'manual',
     });
 
-    osRecebendoCallbacks(callbacks);
-    mpConsultandoOrder('ORD1E2E', PAGO);
+    mp.consultando('ORD1E2E', PAGO);
     await webhook('ORD1E2E').expect(200, { recebido: true });
-    await ate(() => callbacks.length === 2);
-    expect(callbacks[1].corpo).toMatchObject({
+    await ate(() => callbacks().length === 2);
+    expect(callbacks()[1].corpo).toMatchObject({
       type: 'billing.pagamento-aprovado',
       data: { numeroOS: numero, orderId: 'ORD1E2E', valor: '300.00' },
     });
@@ -192,14 +191,13 @@ describe('Billing (e2e com Postgres real)', () => {
 
   it('rejeicao gera callback com motivo e o orcamento nao pode ser aprovado depois', async () => {
     await gerar().expect(201);
-    osRecebendoCallbacks(callbacks);
     await http()
       .post(`/orcamentos/${numero}/rejeitar`)
       .set('Authorization', tokenCliente('cli-1'))
       .send({ motivo: 'caro' })
       .expect(200);
-    await ate(() => callbacks.length === 1);
-    expect(callbacks[0].corpo).toMatchObject({
+    await ate(() => callbacks().length === 1);
+    expect(callbacks()[0].corpo).toMatchObject({
       type: 'billing.orcamento-rejeitado',
       data: { motivo: 'caro' },
     });
@@ -223,22 +221,13 @@ describe('Billing (e2e com Postgres real)', () => {
 
   it('falha no Mercado Pago responde 5xx e a repeticao reaproveita a reserva', async () => {
     await aprovado();
-    const chaves: string[] = [];
-    nock('https://api.mercadopago.com')
-      .post('/v1/orders')
-      .reply(500, function () {
-        chaves.push(String(this.req.headers['x-idempotency-key']));
-        return { message: 'erro' };
-      });
+    mp.falhando('create', 500, 'erro');
     await cobrar().expect(500);
-    nock('https://api.mercadopago.com')
-      .post('/v1/orders')
-      .reply(201, function () {
-        chaves.push(String(this.req.headers['x-idempotency-key']));
-        return { id: 'ORD3E2E', status: 'created', checkout_url: 'https://mp.test/3' };
-      });
+    mp.criando('ORD3E2E');
     await cobrar().expect(201);
+    const chaves = mp.chamadas.map((c) => c.idempotencyKey);
     expect(chaves).toHaveLength(2);
+    expect(chaves[0]).toBeDefined();
     expect(new Set(chaves).size).toBe(1);
   });
 
@@ -252,9 +241,7 @@ describe('Billing (e2e com Postgres real)', () => {
     const out = jest.spyOn(process.stdout, 'write').mockImplementation(capturar);
     const err = jest.spyOn(process.stderr, 'write').mockImplementation(capturar);
     try {
-      nock('https://api.mercadopago.com')
-        .post('/v1/orders')
-        .reply(400, { message: 'payer comprador@testuser.com invalido', status: 400 });
+      mp.falhando('create', 400, `payer ${process.env.MP_PAYER_EMAIL} invalido`);
       await cobrar().expect(500);
     } finally {
       out.mockRestore();
@@ -265,49 +252,48 @@ describe('Billing (e2e com Postgres real)', () => {
     expect(logs).not.toContain(process.env.MP_PAYER_EMAIL as string);
   });
 
-  it('webhook com assinatura invalida: 401, auditado e sem consultar a order', async () => {
+  it('webhook com assinatura invalida ou ts antigo: 401, nada gravado nem consultado', async () => {
     await comOrder('ORD4E2E');
     await webhook('ORD4E2E', { 'x-signature': 'ts=1,v1=00', 'x-request-id': 'r-ruim' }).expect(401);
-    const auditoria = await prisma.webhookMercadoPago.findFirstOrThrow({
-      where: { orderId: 'ORD4E2E' },
-    });
-    expect(auditoria).toMatchObject({ assinaturaValida: false, payload: {} });
-    expect(nock.pendingMocks()).toEqual([]);
+    const antigo = cabecalhosWebhook('ORD4E2E', 'r-antigo', Date.now() - 11 * 60 * 1000);
+    await webhook('ORD4E2E', antigo).expect(401);
+    expect(await prisma.webhookMercadoPago.count({ where: { orderId: 'ORD4E2E' } })).toBe(0);
+    expect(mp.chamadas.filter((c) => c.operacao === 'get')).toEqual([]);
   });
 
   it('webhook repetido: registra uma vez e nao duplica o callback', async () => {
     await comOrder('ORD5E2E');
-    osRecebendoCallbacks(callbacks);
-    mpConsultandoOrder('ORD5E2E', PAGO);
+    mp.consultando('ORD5E2E', PAGO);
     const cabecalhos = cabecalhosWebhook('ORD5E2E');
     await webhook('ORD5E2E', cabecalhos).expect(200);
-    await ate(() => callbacks.length === 1);
+    await ate(() => callbacks().length === 1);
     await ate(async () => {
       const row = await prisma.cobranca.findFirstOrThrow({ where: { numeroOS: numero } });
       return row.callbackEntregueEm !== null;
     });
     await webhook('ORD5E2E', cabecalhos).expect(200);
     await new Promise((r) => setTimeout(r, 100));
-    expect(callbacks).toHaveLength(1);
+    expect(callbacks()).toHaveLength(1);
     expect(await prisma.webhookMercadoPago.count({ where: { orderId: 'ORD5E2E' } })).toBe(1);
   });
 
   it('recusa avisa o OS e cobrar emite nova order, cancelando a anterior', async () => {
     await comOrder('ORD6E2E');
-    osRecebendoCallbacks(callbacks);
-    mpConsultandoOrder('ORD6E2E', { status: 'failed', status_detail: 'cc_rejected' });
+    mp.consultando('ORD6E2E', { status: 'failed', status_detail: 'cc_rejected' });
     await webhook('ORD6E2E').expect(200);
-    await ate(() => callbacks.length === 1);
-    expect(callbacks[0].corpo).toMatchObject({
+    await ate(() => callbacks().length === 1);
+    expect(callbacks()[0].corpo).toMatchObject({
       type: 'billing.pagamento-recusado',
       data: { orderId: 'ORD6E2E', motivo: 'cc_rejected' },
     });
 
-    mpCancelandoOrder('ORD6E2E');
-    mpCriandoOrder('ORD7E2E');
+    // Antes de emitir outra, confere que a antiga segue recusada e a cancela.
+    mp.consultando('ORD6E2E', { status: 'failed', status_detail: 'cc_rejected' });
+    mp.cancelando('ORD6E2E');
+    mp.criando('ORD7E2E');
     const nova = await cobrar().expect(201);
     expect(nova.body.orderId).toBe('ORD7E2E');
-    expect(nock.isDone()).toBe(true);
+    expect(mp.pendentes()).toEqual([]);
   });
 
   it('DELETE e idempotente, inclusive sem orcamento', async () => {
@@ -324,17 +310,15 @@ describe('Billing (e2e com Postgres real)', () => {
 
   it('reconciliacao reenvia o callback com o mesmo id quando o OS falhou', async () => {
     await gerar().expect(201);
-    osRecebendoCallbacks(callbacks, 3, 503);
+    os.responder({ status: 503 }, { status: 503 }, { status: 503 });
     await aprovar().expect(200);
-    await ate(() => callbacks.length === 3, 15000);
-    const idOriginal = callbacks[0].corpo.id;
-    await ate(async () => nock.pendingMocks().length === 0);
+    await ate(() => callbacks().length === 3, 15000);
+    const idOriginal = callbacks()[0].corpo.id;
 
     await new Promise((r) => setTimeout(r, 100));
-    osRecebendoCallbacks(callbacks);
     await app.get(ReconciliarUseCase).execute(DEPOIS_DA_JANELA());
-    expect(callbacks).toHaveLength(4);
-    expect(callbacks[3].corpo.id).toBe(idOriginal);
+    expect(callbacks()).toHaveLength(4);
+    expect(callbacks()[3].corpo.id).toBe(idOriginal);
     const row = await prisma.orcamento.findFirstOrThrow({ where: { numeroOS: numero } });
     expect(row.callbackEntregueEm).not.toBeNull();
   });
@@ -345,10 +329,9 @@ describe('Billing (e2e com Postgres real)', () => {
       where: { callbackEntregueEm: null },
       data: { callbackEntregueEm: new Date() },
     });
-    osRecebendoCallbacks(callbacks);
-    mpConsultandoOrder('ORD8E2E', PAGO);
+    mp.consultando('ORD8E2E', PAGO);
     await app.get(ReconciliarUseCase).execute(DEPOIS_DA_JANELA());
-    expect(callbacks[0].corpo.type).toBe('billing.pagamento-aprovado');
+    expect(callbacks()[0].corpo.type).toBe('billing.pagamento-aprovado');
     const row = await prisma.cobranca.findFirstOrThrow({ where: { numeroOS: numero } });
     expect(row.status).toBe('APROVADA');
   });
@@ -361,5 +344,101 @@ describe('Billing (e2e com Postgres real)', () => {
     await expect(prisma.lancamento.deleteMany({ where: { numeroOS: numero } })).rejects.toThrow(
       /append-only/,
     );
+  });
+
+  describe('cobranca recusada que ainda pode ser paga', () => {
+    const RECUSADA = { status: 'failed', status_detail: 'cc_rejected' };
+
+    /** Order criada, recusada pelo webhook e callback do recusado entregue. */
+    async function recusada(orderId: string) {
+      await comOrder(orderId);
+      mp.consultando(orderId, RECUSADA);
+      await webhook(orderId).expect(200);
+      await ate(async () => {
+        const row = await prisma.cobranca.findFirstOrThrow({ where: { orderId } });
+        return row.status === 'RECUSADA' && row.callbackEntregueEm !== null;
+      });
+      os.limpar();
+      mp.limpar();
+    }
+
+    it('paga depois da recusa com webhook perdido: a reconciliacao aprova', async () => {
+      await recusada('ORD9E2E');
+      mp.consultando('ORD9E2E', PAGO);
+      await app.get(ReconciliarUseCase).execute(DEPOIS_DA_JANELA());
+      const row = await prisma.cobranca.findFirstOrThrow({ where: { orderId: 'ORD9E2E' } });
+      expect(row.status).toBe('APROVADA');
+      expect(callbacks().map((c) => [c.numero, c.corpo.type])).toContainEqual([
+        numero,
+        'billing.pagamento-aprovado',
+      ]);
+    });
+
+    it('reprocesso apos pagamento com webhook perdido devolve a order paga, sem nova', async () => {
+      await recusada('ORD10E2E');
+      mp.consultando('ORD10E2E', PAGO);
+      const resposta = await cobrar().expect(201);
+      expect(resposta.body.orderId).toBe('ORD10E2E');
+      expect(mp.chamadas.map((c) => c.operacao)).toEqual(['get']);
+      expect(await prisma.cobranca.count({ where: { numeroOS: numero } })).toBe(1);
+      await ate(() => callbacks().some((c) => c.corpo.type === 'billing.pagamento-aprovado'));
+      expect(await tiposLedger()).toContain('PAGAMENTO_APROVADO');
+    });
+
+    it('sem cancelar a order antiga nao emite outra; a repeticao conclui', async () => {
+      await recusada('ORD11E2E');
+      mp.consultando('ORD11E2E', RECUSADA);
+      mp.falhando('cancel', 500, 'erro', 'ORD11E2E');
+      await cobrar().expect(500);
+      expect(mp.chamadas.some((c) => c.operacao === 'create')).toBe(false);
+      expect(await prisma.cobranca.count({ where: { numeroOS: numero } })).toBe(1);
+
+      mp.consultando('ORD11E2E', RECUSADA);
+      mp.cancelando('ORD11E2E');
+      mp.criando('ORD12E2E');
+      expect((await cobrar().expect(201)).body.orderId).toBe('ORD12E2E');
+    });
+
+    it('cobrar repetido em paralelo (timeout do OS) responde 201 com a mesma order', async () => {
+      await recusada('ORD13E2E');
+      for (let i = 0; i < 3; i++) {
+        mp.consultando('ORD13E2E', RECUSADA);
+        mp.cancelando('ORD13E2E');
+        mp.criando('ORD14E2E'); // a X-Idempotency-Key repetida devolve a mesma order
+      }
+      const respostas = await Promise.all([cobrar(), cobrar(), cobrar()]);
+      expect(respostas.map((r) => r.status)).toEqual([201, 201, 201]);
+      expect(new Set(respostas.map((r) => r.body.orderId))).toEqual(new Set(['ORD14E2E']));
+      expect(await prisma.cobranca.count({ where: { numeroOS: numero } })).toBe(2);
+    });
+  });
+
+  it('order expirada vai ao ledger como COBRANCA_EXPIRADA', async () => {
+    await comOrder('ORD15E2E');
+    mp.consultando('ORD15E2E', { status: 'expired' });
+    await webhook('ORD15E2E').expect(200);
+    await ate(async () => (await tiposLedger()).includes('COBRANCA_EXPIRADA'));
+    expect(await tiposLedger()).not.toContain('PAGAMENTO_RECUSADO');
+  });
+
+  it('callback recusado pelo OS (4xx) para de ser reenviado no teto', async () => {
+    await gerar().expect(201);
+    os.responder({ status: 404, body: { message: 'OS inexistente' } });
+    await aprovar().expect(200);
+    const doNumero = () => callbacks().filter((c) => c.numero === numero);
+    const falhas = async () =>
+      (await prisma.orcamento.findFirstOrThrow({ where: { numeroOS: numero } })).callbackFalhas;
+    await ate(async () => (await falhas()) === 1);
+
+    const HORA = 60 * 60 * 1000;
+    for (let i = 2; i <= MAX_FALHAS_CALLBACK; i++) {
+      os.responder({ status: 404 });
+      await app.get(ReconciliarUseCase).execute(new Date(Date.now() + i * HORA));
+      expect(await falhas()).toBe(i);
+    }
+    const enviados = doNumero().length;
+    await app.get(ReconciliarUseCase).execute(new Date(Date.now() + 99 * HORA));
+    expect(doNumero()).toHaveLength(enviados);
+    expect(enviados).toBe(MAX_FALHAS_CALLBACK);
   });
 });

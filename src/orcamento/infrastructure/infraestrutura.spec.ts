@@ -1,22 +1,24 @@
 import { createHmac } from 'crypto';
 import { ArgumentsHost, BadRequestException, UnauthorizedException } from '@nestjs/common';
-import { ClienteHttpInterno } from '@guilhermeqmaia/oficina-kit/http';
+import { ClienteHttpInterno, HttpInternoError } from '@guilhermeqmaia/oficina-kit/http';
+import { CallbackRecusadoError } from '../application/ports/callback-os.gateway';
 import { CLIENTE } from '../../test/builders';
 import { ReceberWebhookUseCase } from '../application/use-cases/receber-webhook.use-case';
 import { ReconciliarUseCase } from '../application/use-cases/reconciliar.use-case';
-import { OrcamentoConflitoError } from '../domain/errors';
-import { assinaturaValida } from './assinatura-webhook';
+import { ConcorrenciaError, OrcamentoConflitoError } from '../domain/errors';
+import { assinaturaValida, TOLERANCIA_TS_MS } from './assinatura-webhook';
+import { ConflitoTransitorioFilter } from './conflito-transitorio.filter';
 import { HttpCallbackOsGateway, TIMEOUT_CALLBACK_MS } from './http-callback-os.gateway';
 import { MercadoPagoSdkGateway, OrderClient } from './mercado-pago-sdk.gateway';
 import { OrcamentoController } from './orcamento.controller';
 import { OrcamentoConflitoFilter } from './orcamento-conflito.filter';
 import { PagamentoController } from './pagamento.controller';
 import { ReconciliacaoJob } from './reconciliacao.job';
-import { WebhookController } from './webhook.controller';
+import { WebhookController, webhooksRecebidos } from './webhook.controller';
 
 const SEGREDO = 'segredo-de-teste';
 
-function assinar(id: string, requestId: string, ts = '1700000000000', segredo = SEGREDO): string {
+function assinar(id: string, requestId: string, ts = String(Date.now()), segredo = SEGREDO) {
   const v1 = createHmac('sha256', segredo)
     .update(`id:${id};request-id:${requestId};ts:${ts};`)
     .digest('hex');
@@ -51,6 +53,30 @@ describe('assinaturaValida', () => {
     ['v1 de tamanho errado', { ...dados, assinatura: 'ts=1,v1=abcd' }],
   ])('rejeita: %s', (_nome, entrada) => {
     expect(assinaturaValida(SEGREDO, entrada)).toBe(false);
+  });
+
+  it('aceita ts em segundos dentro da janela', () => {
+    const ts = String(Math.floor(Date.now() / 1000));
+    expect(assinaturaValida(SEGREDO, { ...dados, assinatura: assinar('123', 'r1', ts) })).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['antigo', -1],
+    ['no futuro', 1],
+  ])('rejeita ts %s alem da tolerancia (replay)', (_nome, sinal) => {
+    const agora = new Date('2026-11-15T12:00:00Z');
+    const ts = String(agora.getTime() + sinal * (TOLERANCIA_TS_MS + 1000));
+    const assinatura = assinar('123', 'r1', ts);
+    expect(assinaturaValida(SEGREDO, { ...dados, assinatura }, agora)).toBe(false);
+    expect(assinaturaValida(SEGREDO, { ...dados, assinatura }, new Date(Number(ts)))).toBe(true);
+  });
+
+  it('rejeita ts que nao e numero', () => {
+    expect(assinaturaValida(SEGREDO, { ...dados, assinatura: assinar('123', 'r1', 'abc') })).toBe(
+      false,
+    );
   });
 
   it('sem segredo configurado nada e valido', () => {
@@ -186,6 +212,56 @@ describe('HttpCallbackOsGateway', () => {
   });
 });
 
+describe('HttpCallbackOsGateway: classificacao das falhas', () => {
+  const evento = {
+    id: 'cb',
+    type: 'billing.orcamento-aprovado',
+    numeroOS: 'OS-1',
+    occurredAt: new Date(),
+    data: {},
+  };
+  const falha = (status: number | undefined) =>
+    new HttpInternoError('falhou', 'POST', 'http://os', status, {}, 1);
+  const gatewayFalhando = (erro: unknown) =>
+    new HttpCallbackOsGateway(
+      { post: jest.fn().mockRejectedValue(erro) } as unknown as ClienteHttpInterno,
+      'http://os',
+    );
+
+  it.each([400, 404])('%i do OS e recusa permanente', async (status) => {
+    await expect(gatewayFalhando(falha(status)).enviar(evento)).rejects.toThrow(
+      CallbackRecusadoError,
+    );
+  });
+
+  it.each([
+    ['409 (conflito de versao)', falha(409)],
+    ['5xx esgotado', falha(503)],
+    ['timeout', falha(undefined)],
+    ['erro qualquer', new Error('rede')],
+  ])('%s continua transitorio', async (_nome, erro) => {
+    const promessa = gatewayFalhando(erro).enviar(evento);
+    await expect(promessa).rejects.toBe(erro);
+  });
+});
+
+describe('ConflitoTransitorioFilter', () => {
+  it('responde 503 com Retry-After, nunca 409 { motivo }', () => {
+    const json = jest.fn();
+    const resposta = { status: jest.fn(), setHeader: jest.fn(), json };
+    resposta.status.mockReturnValue(resposta);
+    resposta.setHeader.mockReturnValue(resposta);
+    const host = {
+      switchToHttp: () => ({ getResponse: () => resposta }),
+    } as unknown as ArgumentsHost;
+    new ConflitoTransitorioFilter().catch(new ConcorrenciaError('Cobranca'), host);
+    expect(resposta.status).toHaveBeenCalledWith(503);
+    expect(resposta.setHeader).toHaveBeenCalledWith('Retry-After', '1');
+    expect(json.mock.calls[0][0]).toMatchObject({ statusCode: 503 });
+    expect(json.mock.calls[0][0]).not.toHaveProperty('motivo');
+  });
+});
+
 describe('OrcamentoConflitoFilter', () => {
   it('responde 409 { motivo }', () => {
     const json = jest.fn();
@@ -198,6 +274,11 @@ describe('OrcamentoConflitoFilter', () => {
     expect(json).toHaveBeenCalledWith({ motivo: 'nao aprovado' });
   });
 });
+
+async function valorMetrica(resultado: string): Promise<number> {
+  const { values } = await webhooksRecebidos.get();
+  return values.find((v) => v.labels.resultado === resultado)?.value ?? 0;
+}
 
 describe('WebhookController', () => {
   const execute = jest.fn();
@@ -220,7 +301,6 @@ describe('WebhookController', () => {
       tipo: 'order',
       action: 'order.processed',
       payload: corpo,
-      assinaturaValida: true,
     });
   });
 
@@ -234,16 +314,18 @@ describe('WebhookController', () => {
     expect(execute.mock.calls[0][0].orderId).toBe('corpo');
   });
 
-  it('assinatura invalida: registra e responde 401', async () => {
+  it('assinatura invalida: 401 sem gravar nada, so metrica', async () => {
+    const antes = await valorMetrica('assinatura_invalida');
     await expect(
       controller.mercadoPago({ data_id: 'a' }, 'ts=1,v1=00', undefined, {}),
     ).rejects.toThrow(UnauthorizedException);
-    expect(execute.mock.calls[0][0]).toMatchObject({
-      assinaturaValida: false,
-      xRequestId: '',
-      tipo: null,
-      action: null,
-    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await valorMetrica('assinatura_invalida')).toBe(antes + 1);
+  });
+
+  it('sem type nem action segue com nulos', async () => {
+    await controller.mercadoPago({ data_id: 'ord3' }, assinar('ord3', 'r1'), 'r1', {});
+    expect(execute.mock.calls[0][0]).toMatchObject({ tipo: null, action: null });
   });
 
   it.each([
