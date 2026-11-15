@@ -188,10 +188,30 @@ jobs:
 
       - name: Deploy (kustomize) + migrations
         if: steps.guard.outputs.configured == 'true' && steps.guard.outputs.eks == 'true'
+        env:
+          # Retorno do checkout = <URL do API Gateway>/pagamento, definida pelo
+          # scripts/aws-deploy-all.sh do infra-k8s. Vazia: fica o placeholder do ConfigMap.
+          MP_RETORNO_BASE_URL: ${{ vars.MP_RETORNO_BASE_URL }}
         run: |
           set -euo pipefail
           cd k8s-aws
           kustomize edit set image "oficina-billing-service=$registry/$ECR_REPOSITORY:$IMAGE_TAG"
+          if [ -n "${MP_RETORNO_BASE_URL}" ]; then
+            if ! printf '%s' "$MP_RETORNO_BASE_URL" | grep -Eq '^https?://[^[:space:]"]+$'; then
+              echo "::error::MP_RETORNO_BASE_URL invalida (esperado http(s)://...)."; exit 1
+            fi
+            printf '%s\n' \
+              'apiVersion: v1' \
+              'kind: ConfigMap' \
+              'metadata:' \
+              '  name: oficina-billing-service-config' \
+              'data:' \
+              "  MP_RETORNO_BASE_URL: \"${MP_RETORNO_BASE_URL%/}\"" > patch-mp-retorno.yaml
+            kustomize edit add patch --path patch-mp-retorno.yaml
+            echo "MP_RETORNO_BASE_URL: ${MP_RETORNO_BASE_URL%/}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::MP_RETORNO_BASE_URL vazia — retorno do checkout fica no placeholder do ConfigMap."
+          fi
           # migrations-job e imutavel: apaga o anterior e deixa o kustomize recria-lo
           # ja com a imagem do ECR (aplicar o YAML da base usaria a tag local do kind).
           kubectl -n oficina delete job oficina-billing-service-migrations --ignore-not-found
